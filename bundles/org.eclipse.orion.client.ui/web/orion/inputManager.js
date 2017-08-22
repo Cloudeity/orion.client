@@ -581,7 +581,7 @@ define([
 			var input = PageUtil.matchResourceParameters(loc), oldInput = this._parsedLocation || {};
 			var encodingChanged = oldInput.encoding !== input.encoding;
 			var afterConfirm = function(){
-				var editorChanged = editor && oldInput.editor !== input.editor;
+				var editorChanged = oldInput.editor !== input.editor;
 				this._location = loc;
 				this._parsedLocation = input;
 				this._ignoreInput = true;

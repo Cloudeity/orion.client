@@ -16,6 +16,8 @@
 
 @import "../css/theme.css";
 
+@import "../css/consoleView.css";
+
 .outlinerWrapper {
 	height: 100%;
 }

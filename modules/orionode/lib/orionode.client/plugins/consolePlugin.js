@@ -48,6 +48,17 @@ define(['orion/plugin'], function(PluginProvider) {
 			order: 1000, // low priority
 			uriTemplate: "{+OrionHome}/tty/ttyShell.html"
 		});
+		
+		var CONSOLE_VIEWER_ID = "orion.viewer.console";
+		provider.registerService("orion.edit.editor", {}, {
+			id: CONSOLE_VIEWER_ID,
+			name: "Console",
+			nls: "orion/nls/messages",
+			uriTemplate: "../edit/edit.html#{,Location,params*},editor=" + CONSOLE_VIEWER_ID,
+			validationProperties: [
+				{source: "Directory", match: true}
+			]
+		});
 	}
 
 	return {

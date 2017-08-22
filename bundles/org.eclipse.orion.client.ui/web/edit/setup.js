@@ -21,6 +21,7 @@ define([
 	'orion/editor/textModelFactory',
 	'orion/editor/undoStack',
 	'orion/folderView',
+	'orion/consoleView',
 	'orion/editorView',
 	'orion/editorPluginView',
 	'orion/markdownView',
@@ -63,7 +64,7 @@ define([
 ], function(
 	messages, Sidebar, mInputManager, mCommands, mGlobalCommands,
 	mTextModelFactory, mUndoStack,
-	mFolderView, mEditorView, mPluginEditorView , mMarkdownView, mMarkdownEditor,
+	mFolderView, mConsoleView, mEditorView, mPluginEditorView , mMarkdownView, mMarkdownEditor,
 	mCommandRegistry, mContentTypes, mFileClient, mFileCommands, mEditorCommands, mSelection, mStatus, mProgress, mOperationsClient, mGitClient, mSshTools, mOutliner, mDialogs, mExtensionCommands, ProjectCommands, mSearchClient,
 	EventTarget, URITemplate, i18nUtil, PageUtil, util, objects, lib, Deferred, mProjectClient, mSplitter, mTooltip, mContextMenu, mMenuBar, bidiUtils, mCustomGlobalCommands, mGeneralPrefs, mBreadcrumbs, mKeyBinding, urlModifier
 ) {
@@ -1290,10 +1291,14 @@ objects.mixin(EditorViewer.prototype, {
 				metadata: metadata
 			}, this.defaultOptions());
 			//TODO better way of registering built-in editors
+			var id = input.editor;
 			if (metadata.Directory) {
-				view = new mFolderView.FolderView(options);
+				if (id === "orion.viewer.console") {
+					view = new mConsoleView.ConsoleView(options);
+				} else {
+						view = new mFolderView.FolderView(options);
+				}
 			} else {
-				var id = input.editor;
 				this.editorView.setParent(this.contentNode);
 				if (!id || id === "orion.editor") { //$NON-NLS-0$
 					view = this.editorView;
@@ -1700,6 +1705,9 @@ objects.mixin(EditorSetup.prototype, {
 			this.editorViewers.forEach(function(viewer) {
 				if (viewer.domNode === evt.node) {
 					viewer.editorView.editor.resize();
+					if (viewer.currentEditorView && viewer.currentEditorView.resize) {
+						viewer.currentEditorView.resize();
+					}
 				}
 			});
 		}.bind(this));
