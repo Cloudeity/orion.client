@@ -43,15 +43,15 @@ define([
 			order: 10
 		});
 		
-		if (!util.isElectron) {
-			provider.registerService("orion.page.link.category", null, {
-				id: "shell",
-				name: messages["Shell"],
-				nls: "orion/nls/messages",
-				imageClass: "core-sprite-shell",
-				order: 40
-			});
-		}
+// 		if (!util.isElectron) {
+// 			provider.registerService("orion.page.link.category", null, {
+// 				id: "shell",
+// 				name: messages["Shell"],
+// 				nls: "orion/nls/messages",
+// 				imageClass: "core-sprite-shell",
+// 				order: 40
+// 			});
+// 		}
 		
 		provider.registerService("orion.page.link.category", null, {
 			id: "settings",
@@ -169,25 +169,25 @@ define([
 //			uriTemplate: "{+OrionHome}/edit/edit.html#"
 //		});
 
-		if (!util.isElectron) {
-			provider.registerService("orion.page.link.user", null, {
-				id: "orion.user.settings",
-				order: 10,
-				name: widgetMessages["userSettings"],
-				nls: "orion/widgets/nls/messages",
-				uriTemplate: "{+OrionHome}/settings/settings.html#,category=userSettings",
-				category: "user.0"
-			});
+// 		if (!util.isElectron) {
+// 			provider.registerService("orion.page.link.user", null, {
+// 				id: "orion.user.settings",
+// 				order: 10,
+// 				name: widgetMessages["userSettings"],
+// 				nls: "orion/widgets/nls/messages",
+// 				uriTemplate: "{+OrionHome}/settings/settings.html#,category=userSettings",
+// 				category: "user.0"
+// 			});
 	
-			provider.registerService("orion.page.link.user", null, {
-				id: "orion.help",
-				order: 20,
-				name: widgetMessages["Help"],
-				nls: "orion/widgets/nls/messages",
-				uriTemplate: "{+OrionHome}/help/help.html",
-				category: "user.0"
-			});
-		}
+// 			provider.registerService("orion.page.link.user", null, {
+// 				id: "orion.help",
+// 				order: 20,
+// 				name: widgetMessages["Help"],
+// 				nls: "orion/widgets/nls/messages",
+// 				uriTemplate: "{+OrionHome}/help/help.html",
+// 				category: "user.0"
+// 			});
+// 		}
 		
 		provider.registerService("orion.page.link.user", null, {
 			id: "orion.report.bug",
