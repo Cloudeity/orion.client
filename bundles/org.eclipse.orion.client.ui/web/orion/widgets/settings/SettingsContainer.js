@@ -102,13 +102,13 @@ define([
 				_self.settingsCategories = [];
 			
 				var categories = prefs[ 'categories' ] || {};
-				if (!util.isElectron && (categories.showUserSettings === undefined || categories.showUserSettings)) {
-					_self.settingsCategories.push({
-						id: "userSettings", //$NON-NLS-0$
-						textContent: messages["User Profile"],
-						show: _self.showUserSettings
-					});
-				}
+				//if (!util.isElectron && (categories.showUserSettings === undefined || categories.showUserSettings)) {
+				//	_self.settingsCategories.push({
+				//		id: "userSettings", //$NON-NLS-0$
+				//		textContent: messages["User Profile"],
+				//		show: _self.showUserSettings
+				//	});
+				//}
 				
 				if (categories.showGitSettings === undefined || categories.showGitSettings) {
 					_self.settingsCategories.push({
