@@ -9,24 +9,14 @@
  *     IBM Corporation - initial API and implementation
  *******************************************************************************/
 /*eslint-env node*/
-var child_process = require('child_process');
-var path = require('path');
-var fs = require('fs');
-var rimraf = require('rimraf');
-var express = require('express');
-
-var supertest = require('supertest');
-var CONTEXT_PATH = '';
-var configParams = { "orion.single.user": true };
-var WORKSPACEDIR = path.join(__dirname, '.test_workspace');
-
-var app = express();
-var options = {workspaceDir: WORKSPACEDIR, configParams:configParams};
-app.locals.metastore = require('../../lib/metastore/fs/store')(options);
-app.locals.metastore.setup(app);
-app.use(CONTEXT_PATH + '/workspace*', require('../../lib/workspace')({ workspaceRoot: CONTEXT_PATH + '/workspace', fileRoot: CONTEXT_PATH + '/file', gitRoot: CONTEXT_PATH + '/gitapi', options: options }));
-var request = supertest.bind(null, app);
-var WORKSPACE = CONTEXT_PATH + '/workspace';
+var path = require('path'),
+	fs = require('fs'),
+	rimraf = require('rimraf'),
+	express = require('express'),
+	workspace = require('../../lib/workspace'),
+	supertest = require('supertest'),
+	store = require('../../lib/metastore/fs/store'),
+	CONTEXT_PATH = '';
 
 function debug(msg) {
 	if (exports.DEBUG) {
@@ -36,26 +26,44 @@ function debug(msg) {
 
 /**
  * Deletes dir and everything in it.
+ * @param {string} dir The directory to delete
+ * @param {fn} callback The function to call when the deletion is done
  */
-function tearDown(dir, callback) {
+exports.tearDown = tearDown = function tearDown(dir, callback) {
 	rimraf(dir, callback);
-}
-
-function setUpWorkspace() {
-	 request()
-	.get('/user')
-	.end(function(){
-		request()
-		.post(WORKSPACE)
-		.set('Slug', 'Orion Content')
-		.end(function(){
-			console.log("Done Creating workspace")
-		});
-	});
-}
+};
 
 /**
- * Creates a workspace directory with a few files and folders.
+ * Sets up the workspace metadata 
+ * @param {string} workspace The workspace path
+ * @param {?} metastore The backing metastore
+ * @param {?} params The params to use
+ */
+exports.setUpWorkspace = function setUpWorkspace(wsDir, metastore, done) {
+	var app = express();
+	var options = { workspaceDir: wsDir,
+					configParams: { 
+						"orion.single.user": true, 
+						"orion.single.user.metaLocation": metastore
+					} , 
+					workspaceRoot: CONTEXT_PATH + '/workspace', 
+					fileRoot: CONTEXT_PATH + '/file', 
+					gitRoot: CONTEXT_PATH + '/gitapi'
+				 };
+	app.locals.metastore = store(options);
+	app.locals.metastore.setup(app);
+	app.use(CONTEXT_PATH + '/workspace*', workspace(options));
+	var request = supertest.bind(null, app);
+	
+	request()
+		.post(CONTEXT_PATH + '/workspace')
+		.set('Slug', 'Orion Content')
+		.expect(201)
+		.end(done);
+};
+
+/**
+ * Synchronously creates a workspace directory with a few files and folders.
  * Uses POSIX shell commands, so on Windows this must be run from within a Cygwin or MinGW shell. CMD.EXE will not work.
  <pre>
    dir
@@ -66,18 +74,10 @@ function setUpWorkspace() {
    |-------my subfolder/
  </pre>
  */
-function setUp(dir, callback) {
+exports.setUp = function setUp(dir, callback, wsjson) {
 	debug('Using directory: ' + dir);
 	function generateContent() {
 		debug('\nCreating content...');
-		/*
-		mkdir project
-		mkdir "project/my folder"
-		mkdir "project/my folder/my subfolder"
-		echo -n "hello world" > "project/fizz.txt"
-		echo -n "buzzzz" > "project/my folder/buzz.txt"
-		echo -n "whoa" > "project/my folder/my subfolder/quux.txt"
-		*/
 		var projectFolder = path.join(dir, "project");
 		var myFolder = path.join(projectFolder, "my folder");
 		var subfolder = path.join(myFolder, "my subfolder");
@@ -85,30 +85,70 @@ function setUp(dir, callback) {
 		fs.mkdirSync(projectFolder);
 		fs.mkdirSync(myFolder);
 		fs.mkdirSync(subfolder);
-		fs.writeFileSync(path.join(dir, 'workspace.json'), '{}');
+		if(wsjson || wsjson === undefined) {
+			fs.writeFileSync(path.join(dir, 'workspace.json'), '{}');
+		}
 		fs.writeFileSync(path.join(projectFolder, "fizz.txt"), "hello world");
 		fs.writeFileSync(path.join(myFolder, "buzz.txt"), "buzzzz");
 		fs.writeFileSync(path.join(subfolder, "quux.txt"), "whoa");
+		fs.writeFileSync(path.join(subfolder, "foo.html"), "<html></html>");
+		fs.writeFileSync(path.join(subfolder, "bar.js"), "function myFunc(one) {}");
+		fs.writeFileSync(path.join(subfolder, "nonalpha.md"), "amber&sand");
 		callback();
 	}
-	fs.exists(dir, function(exists) {
-		if (exists) {
-			debug('\nDirectory exists; cleaning...');
-			tearDown(dir, function(err) {
-				if (err) {
-					debug(err);
-					return;
-				}
-				fs.mkdir(dir, generateContent);
-			});
-		} else {
-			fs.mkdir(dir, generateContent);
-		}
-	});
+	if(fs.existsSync(dir)) {
+		debug('\nDirectory exists; cleaning...');
+		tearDown(dir, function(err) {
+			if (err) {
+				debug(err);
+				return;
+			}
+			fs.mkdirSync(dir);
+			generateContent();
+		});
+	} else {
+		fs.mkdirSync(dir);
+		generateContent();
+	}
 }
 
-
+exports.setUpCF = function setUpCF(dir, callback) {
+	function createFiles() {
+		//copy in all the files
+		var test_data_path = path.join(__dirname, "../testData/manifestTest");
+		var files = fs.readdirSync(test_data_path);
+		if(Array.isArray(files)) {
+			files.forEach(function(file) {
+				if(!fs.statSync(path.join(test_data_path, file)).isFile()) {
+					return;
+				}
+				var rs = fs.createReadStream(path.join(test_data_path, file)),
+					ws = fs.createWriteStream(path.join(cf, file));
+				rs.on('error', (err) => {
+					console.log(err.message)
+				});
+				ws.on('error', (err) => {
+					console.log("error writing to: "+err.message)
+				});
+				rs.pipe(ws);
+			});
+		}
+		callback();
+	}
+	var cf = path.join(dir, "cftests");
+	if(fs.existsSync(cf)) {
+		debug('\nDirectory exists; cleaning...');
+		tearDown(cf, function(err) {
+			if (err) {
+				debug(err);
+				return;
+			}
+			fs.mkdirSync(cf);
+			createFiles();
+		});
+	} else {
+		fs.mkdirSync(cf);
+		createFiles();
+	}
+}
 exports.DEBUG = process.env.DEBUG_TESTS || false;
-exports.setUp = setUp;
-exports.setUpWorkspace = setUpWorkspace;
-exports.tearDown = tearDown;

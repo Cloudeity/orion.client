@@ -1,3 +1,0 @@
-importScripts("upperWorker.js");
-
-

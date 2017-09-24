@@ -186,7 +186,7 @@ module.exports.router = function(options) {
 				registerUrl += "&identifier=" + user.id;
 				return res.redirect(registerUrl);
 			} else if (user.__linkUser) {
-				return res.status(200).send("<html><head></head><body onload=\"window.opener.handleOAuthResponse('" + user.id + "');window.close();\"></body></html>");
+				return api.writeResponse(200, res, null, "<html><head></head><body onload=\"window.opener.handleOAuthResponse('" + user.id + "');window.close();\"></body></html>");
 			}
 		}
 		doLogin(req, user, function(err) {
@@ -239,12 +239,12 @@ module.exports.router = function(options) {
 		});
 	}
 
-	app.post('/logout', function(req, res){
+	app.post('/logout', options.authenticate, function(req, res){
 		req.logout();
 		api.writeResponse(null, res);
 	});
 	
-	app.post('/login/form', function(req, res, next) {
+	app.post('/login/form', options.authenticate, function(req, res, next) {
 		passport.authenticate('local', function(err, user, info) {
 			if (err) { 
 				return next(err);  
@@ -269,7 +269,7 @@ module.exports.router = function(options) {
 		req.user.checkRights(req.user.username, uri, req, res, next);
 	}
 
-	app.get("/users", checkUserAccess, function(req,res) {
+	app.get("/users", options.authenticate, checkUserAccess, function(req,res) {
 		var start = Math.max(0, Number(req.query.start)) || 0;
 		var rows = Math.max(0, Number(req.query.rows)) || 20;
 		metastore(req).getAllUsers(start, rows, function(err, users) {
@@ -292,7 +292,7 @@ module.exports.router = function(options) {
 		});
 	});
 
-	app.get("/users/:id", checkUserAccess, function(req,res){
+	app.get("/users/:id", options.authenticate, checkUserAccess, function(req,res){
 		metastore(req).getUser(req.params.id, function(err, user) {
 			if (err) {
 				return api.writeResponse(404, res);
@@ -304,7 +304,7 @@ module.exports.router = function(options) {
 		});
 	});
 
-	app.put("/users/:id", checkUserAccess, function(req,res){
+	app.put("/users/:id", options.authenticate, checkUserAccess, function(req,res){
 		var id = req.params.id;
 		var store = metastore(req);
 		store.getUser(id, function(err, user) {
@@ -359,14 +359,14 @@ module.exports.router = function(options) {
 		});
 	});
 
-	app.delete("/users/:id", checkUserAccess, function(req,res){
+	app.delete("/users/:id", options.authenticate, checkUserAccess, function(req,res){
 		metastore(req).deleteUser(req.params.id, function(err) {
 			if (err) return api.writeResponse(400, res);
 			return api.writeResponse(200, res);
 		});
 	});
 
-	app.post("/users/:id", checkUserAccess, function(req,res){
+	app.post("/users/:id", options.authenticate, checkUserAccess, function(req,res){
 		var id = req.params.id;
 		var newPassword = req.body.Password;
 		if (!newPassword) {
@@ -389,7 +389,7 @@ module.exports.router = function(options) {
 		});
 	});
 
-	app.post('/users', function(req, res){
+	app.post('/users', options.authenticate, function(req, res){
 		// If there are admin accounts, only admin accounts can create users
 		if (options.configParams["orion.auth.user.creation"] && !isAdmin(req.user && req.user.username)) {
 			return api.writeResponse(403, res);
@@ -429,7 +429,7 @@ module.exports.router = function(options) {
 			if (err) {
 				return logError(err);
 			}
-			return res.status(200).send("<html><body><p>Your email address has been confirmed. Thank you! <a href=\"" + ( req.protocol + '://' + req.get('host'))
+			return api.writeResponse(200, res, null, "<html><body><p>Your email address has been confirmed. Thank you! <a href=\"" + ( req.protocol + '://' + req.get('host'))
 			+ "\">Click here</a> to continue and login to your account.</p></body></html>");
 		});
 	});
@@ -453,7 +453,7 @@ module.exports.router = function(options) {
 					return logError(err);
 				}
 				sendMail({user: user, options: options, template: PWD_RESET_MAIL, auth: "", req: req, pwd: password});
-				return res.status(200).send("<html><body><p>Your password has been successfully reset. Your new password has been sent to the email address associated with your account.</p></body></html>");
+				return api.writeResponse(200, res, null, "<html><body><p>Your password has been successfully reset. Your new password has been sent to the email address associated with your account.</p></body></html>");
 			});
 		});
 	});
@@ -496,7 +496,7 @@ module.exports.router = function(options) {
 			RegistrationURI:options.configParams["orion.auth.registration.uri"] || undefined});
 	});
 	
-	app.post('/login', function(req, res) {
+	app.post('/login', options.authenticate, function(req, res) {
 		if (!req.user) {
 			return api.writeResponse(200, res);
 		}

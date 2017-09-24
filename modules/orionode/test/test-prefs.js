@@ -14,7 +14,7 @@ var chai = require('chai'),
     assert = require('assert'),
     express = require('express'),
     nodePath = require('path'),
-    PrefsController = require('../lib/controllers/prefs').router,
+    prefs = require('../lib/prefs').router,
     Promise = require('bluebird'),
     supertest = require('supertest'),
     testData = require('./support/test_data');
@@ -23,54 +23,55 @@ var expect = chai.expect,
     fs = Promise.promisifyAll(require('fs')),
     mkdirpAsync = Promise.promisify(require('mkdirp'));
 
-var CONTEXT_PATH = '';
-var PREFS_PREFIX = CONTEXT_PATH + '/prefs';
-var WORKSPACE_DIR = nodePath.join(__dirname, '.test_workspace');
-
-var samplePrefData = {
-	user: {
-		foo: {
-			bar: 123,
-			qux: 'q'
-		},
-		foo2: false
-	},
-	zzz: 1
-};
+var CONTEXT_PATH = '',
+	PREFS_PREFIX = CONTEXT_PATH + '/prefs',
+	USERID = "anonymous",
+	WORKSPACE_DIR = nodePath.join(__dirname, '.test_workspace'),
+	MEATASTORE =  nodePath.join(__dirname, '.test_metadata');
 
 var app = express();
 var options = {
 	workspaceDir: WORKSPACE_DIR,
-	configParams: { "orion.single.user": true }
+	configParams: { "orion.single.user": true , "orion.single.user.metaLocation": MEATASTORE}
 };
 app.locals.metastore = require('../lib/metastore/fs/store')(options);
 app.locals.metastore.setup(app);
-app.use(PREFS_PREFIX, PrefsController(options));
+app.use(PREFS_PREFIX, prefs(options));
 
 var request = supertest.bind(null, app);
 
-function setupWorkspace(done) {
-	Promise.fromCallback(testData.setUp.bind(null, WORKSPACE_DIR))
-	.asCallback(done);
-}
-
 function setupPrefs(done) {
-	var path = nodePath.join(WORKSPACE_DIR, '.orion', PrefsController.PREF_FILENAME);
-	mkdirpAsync(nodePath.dirname(path))
-	.then(() => fs.writeFileAsync(path, JSON.stringify(samplePrefData)))
-	.asCallback(done);
+	var path = nodePath.join(MEATASTORE, '.orion', 'user.json');
+	fs.readFileAsync(path,'utf8')
+	.then(function(userMetadata){
+		userMetadata = JSON.parse(userMetadata);
+		userMetadata.Properties["foo/bar"] = 123;
+		userMetadata.Properties["foo/qux"] = 'q';
+		return fs.writeFileAsync(path, JSON.stringify(userMetadata,null,2),"utf8")
+		.asCallback(done);
+	});
 }
 
 describe('Orion preferences tests', function() {
-	beforeEach(setupWorkspace);
-
+	before("Set up the workspace", function(done) {
+		testData.setUp(WORKSPACE_DIR, function(){
+			testData.setUpWorkspace(WORKSPACE_DIR, MEATASTORE, done);
+		});
+	});
+	after("Remove Workspace and Metastore", function(done) {
+		testData.tearDown(WORKSPACE_DIR, function(){
+			testData.tearDown(nodePath.join(MEATASTORE, '.orion'), function(){
+				testData.tearDown(MEATASTORE, done)
+			})
+		});
+	});
 	/**
 	 * Port of Java-specific tests to ensure parity
 	 * @since 16.0
 	 */
 	describe('Core pref tests', function() {
 		it('testBug409792', function() {
-			return request().put(PREFS_PREFIX + '/testBug409792')
+			return request().put(PREFS_PREFIX + "/user/" + USERID + '/testBug409792')
 				.type('json')
 				.send({ "http://127.0.0.2:8080/plugins/samplePlugin.html": true })
 				.expect(204);
@@ -182,32 +183,45 @@ describe('Orion preferences tests', function() {
 		it.skip('testDeleteNode', function() {
 			//skipped in Java tests as well
 		});
-		it('testValueWithSpaces', function() {
-			return request().put(PREFS_PREFIX + '/user/java')
-					.type('json')
-					.send({"Name" : "Frodo Baggins"})
-					.expect(204)
-					.then(function() {
-						return request().get(PREFS_PREFIX + '/user/java?key=Name')
-								.expect(200)
-								.then(function(res) {
-									assert(res.text, "There was no text returned in the response");
-									var o = JSON.parse(res.text);
-									assert(o, "The JSON parse resulted in nothing");
-									assert.equal(o["Name"], "Frodo Baggins", "Name should be Frodo Baggins");
-								});
+		it('testValueWithSpaces', function(done) {
+			request().put(PREFS_PREFIX + '/user/java')
+				.type('json')
+				.send({"Name" : "Frodo Baggins"})
+				.expect(204)
+				.end(function(err, res) {
+					request().get(PREFS_PREFIX + '/user/java?key=Name')
+						.expect(200)
+						.end(function(err, res) {
+							assert(res.text, "There was no text returned in the response");
+							var o = JSON.parse(res.text);
+							assert(o, "The JSON parse resulted in nothing");
+							assert.equal(o["Name"], "Frodo Baggins", "Name should be Frodo Baggins");
+							done();
+						});
 				});
 
 		});
-		it('testAccessingMetadata - prefs/Users', function() {
-			return request().get(PREFS_PREFIX + '/Users')
+		it('testAccessingMetadata - prefs/', function(done) {
+			request().get(PREFS_PREFIX + '/')
+				.expect(405)
+				.end(function(err, res) {
+					request().put(PREFS_PREFIX + '/')
+						.type('json')
+						.send({"Name" : "Frodo Baggins"})
 						.expect(405)
-						.then(function() {
-							return request().put(PREFS_PREFIX + '/Users')
-									.type('json')
-									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
-						});
+						.end(done);
+				});
+		});
+		it('testAccessingMetadata - prefs/Users', function(done) {
+			request().get(PREFS_PREFIX + '/Users')
+				.expect(405)
+				.end(function(err, res) {
+					request().put(PREFS_PREFIX + '/Users')
+						.type('json')
+						.send({"Name" : "Frodo Baggins"})
+						.expect(405)
+						.end(done);
+				});
 		});
 		it('testAccessingMetadata - prefs/user', function() {
 			return request().get(PREFS_PREFIX + '/user')
@@ -216,7 +230,7 @@ describe('Orion preferences tests', function() {
 							return request().put(PREFS_PREFIX + '/user')
 									.type('json')
 									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
+									.expect(405);
 						});
 			
 		});
@@ -227,7 +241,7 @@ describe('Orion preferences tests', function() {
 							return request().put(PREFS_PREFIX + '/Workspaces')
 									.type('json')
 									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
+									.expect(405);
 						});
 		});
 		it('testAccessingMetadata - prefs/workspace', function() {
@@ -237,7 +251,7 @@ describe('Orion preferences tests', function() {
 							return request().put(PREFS_PREFIX + '/workspace')
 									.type('json')
 									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
+									.expect(405);
 						});
 		});
 		it('testAccessingMetadata - prefs/Projects', function() {
@@ -247,7 +261,7 @@ describe('Orion preferences tests', function() {
 							return request().put(PREFS_PREFIX + '/Projects')
 									.type('json')
 									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
+									.expect(405);
 						});
 		});
 		it('testAccessingMetadata - prefs/project', function() {
@@ -257,14 +271,19 @@ describe('Orion preferences tests', function() {
 							return request().put(PREFS_PREFIX + '/project')
 									.type('json')
 									.send({"Name" : "Frodo Baggins"})
-									.expect(403);
+									.expect(405);
 						});
 		});
 		it('testGetNode - /prefs/user/<userid>/testprefs');
 		it('testGetNode - /prefs/workspace/<workspaceid>/testprefs');
 		it('testGetNode - /prefs/project/<workspaceid>/<projectname>/testprefs');
 	});
-	describe('when NO prefs.json exists', function() {
+	describe('when NO user.json exists', function() {
+		before("remove user.json for the following test case", function(done){
+			testData.tearDown(nodePath.join(MEATASTORE, '.orion'), function(){
+				testData.tearDown(MEATASTORE, done)
+			});
+		});
 		describe('and we GET a nonexistent single key', function() {
 			it('should receive 404', function() {
 				return request().get(PREFS_PREFIX + '/user/a/b/c?key=jsjsijf')
@@ -350,7 +369,7 @@ describe('Orion preferences tests', function() {
 				setTimeout(function() {
 					request().get(PREFS_PREFIX + '/user/foo').expect(200)
 					.then(function(res) {
-						expect(res.body).to.deep.equal({ howdy: 'partner' });
+						expect(res.body).to.deep.equal({howdy: 'partner'});
 						finished();
 					});
 				}, 10);
@@ -384,7 +403,7 @@ describe('Orion preferences tests', function() {
 					// Node should be empty
 					request().get(PREFS_PREFIX + '/user/foo').expect(200)
 					.then(function(res) {
-						expect(res.body).to.deep.equal({ });
+						expect(res.body).to.deep.equal({});
 						finished();
 					});
 				}, 10);
@@ -392,15 +411,9 @@ describe('Orion preferences tests', function() {
 		});
 
 		describe('and we DELETE a non-existent node', function() {
-			beforeEach(function() {
-				return request().delete(PREFS_PREFIX + '/user/foo/asgjsgkjkjtiwujk')
-				.expect(204);
-			});
 			it('should have no effect', function() {
-				return request().get(PREFS_PREFIX + '/').expect(200)
-				.then(function(res) {
-					expect(res.body).to.deep.equal(samplePrefData);
-				});
+				return request().delete(PREFS_PREFIX + '/user/foo/asgjsgkjkjtiwujk')
+				.expect(204);		
 			});
 		});
 	});

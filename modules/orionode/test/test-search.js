@@ -9,29 +9,73 @@
  *     IBM Corporation - initial API and implementation
  *******************************************************************************/
 /*eslint-env mocha */
-var assert = require("assert"),
-	express = require("express"),
+var express = require("express"),
 	supertest = require("supertest"),
 	path = require("path"),
-	testdata = require("./support/test_data"),
-	middleware = require("../index.js");
+	testData = require("./support/test_data"),
+	store = require('../lib/metastore/fs/store'),
+	testHelper = require('./support/testHelper'),
+	workspace = require('../lib/workspace'),
+	file = require('../lib/file'),
+	search = require("../lib/search");
 
-var WORKSPACE = path.join(__dirname, ".test_workspace");
+var CONTEXT_PATH = '',
+	PREFIX_WORKSPACE = CONTEXT_PATH + '/workspace', 
+	PREFIX_FILE = CONTEXT_PATH + '/file',
+	PREFIX = CONTEXT_PATH + '/filesearch',
+	WORKSPACE_ID = 'anonymous-OrionContent',
+	TEST_WORKSPACE_NAME = '.test_workspace',
+	WORKSPACE = path.join(__dirname, TEST_WORKSPACE_NAME),
+	MEATASTORE =  path.join(__dirname, '.test_metadata');
 
-var orion = function(options) {
-	// Ensure tests run in 'single user' mode
-	var opts = options || {};
-	opts.workspaceDir = WORKSPACE;
-	opts.configParams = { "orion.single.user": true };
-	return middleware(opts);
-};
+var options = {
+	workspaceRoot: CONTEXT_PATH + '/workspace', 
+	fileRoot: CONTEXT_PATH + '/file', 
+	gitRoot: CONTEXT_PATH + '/gitapi',
+	configParams: {
+		"orion.single.user": true,
+		"orion.single.user.metaLocation": MEATASTORE
+	},
+	workspaceDir: WORKSPACE
+	};
+
+var app = express();
+	app.locals.metastore = store(options);
+	app.locals.metastore.setup(app);
+	app.use(PREFIX, search(options));
+	app.use(PREFIX_WORKSPACE, workspace(options));
+	app.use(PREFIX_FILE, file(options));
+
+testHelper.handleErrors(app);
+
+var request = supertest.bind(null, app);
 
 describe("Orion search", function() {
+	beforeEach("Create the default workspace and create metadata", function(done) {
+		testData.setUp(WORKSPACE, function() {
+			testData.setUpWorkspace(WORKSPACE, MEATASTORE, done);
+		}, false);
+	});
+	afterEach("Remove .test_workspace", function(done) {
+		testData.tearDown(testHelper.WORKSPACE, function(){
+			testData.tearDown(path.join(MEATASTORE, '.orion'), function() {
+				testData.tearDown(MEATASTORE, done)
+			});
+		});
+	});
+	//search query shape
+	//filesearch?
+		//sort=Path
 	/**
 	 * From: org.eclipse.orion.server.tests.search.SearchTest.java
 	 */
 	describe("search tests", function() {
-		it("testUnknownTerm");
+		it("testUnknownTerm", function(done) {
+			testHelper.withWorkspace(request, PREFIX_WORKSPACE, WORKSPACE_ID)
+				.end(function(err, res) {
+					done() //TODO
+				});
+		});
 		it("testUnknownTermMixedTail");
 		it("testUnknownTermMixedMid");
 		it("testPartialWord");

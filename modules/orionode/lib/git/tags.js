@@ -16,7 +16,6 @@ var url = require('url');
 var clone = require('./clone');
 var express = require('express');
 var bodyParser = require('body-parser');
-var util = require('./util');
 
 module.exports = {};
 
@@ -25,6 +24,9 @@ module.exports.router = function(options) {
 	var gitRoot = options.gitRoot;
 	if (!fileRoot) { throw new Error('options.fileRoot is required'); }
 	if (!gitRoot) { throw new Error('options.gitRoot is required'); }
+
+	var contextPath = options && options.configParams["orion.context.path"] || "";
+	fileRoot = fileRoot.substring(contextPath.length);
 
 	module.exports.tagJSON = tagJSON;
 
@@ -42,9 +44,9 @@ function tagJSON(fullName, shortName, sha, timestamp, fileDir, annotated) {
 		"CloneLocation": gitRoot + "/clone" + fileDir,
 		"CommitLocation": gitRoot + "/commit/" + sha + fileDir,
 		"LocalTimeStamp": timestamp,
-		"Location": gitRoot + "/tag/" + util.encodeURIComponent(shortName) + fileDir,
+		"Location": gitRoot + "/tag/" + api.encodeURIComponent(shortName) + fileDir,
 		"TagType": annotated ? "ANNOTATED" : "LIGHTWEIGHT",
-		"TreeLocation": gitRoot + "/tree" + fileDir + "/" + util.encodeURIComponent(shortName),
+		"TreeLocation": gitRoot + "/tree" + fileDir + "/" + api.encodeURIComponent(shortName),
 		"Type": "Tag"
 	};
 }
@@ -84,7 +86,7 @@ function isAnnotated(repo, ref) {
 }
 
 function getTags(req, res) {
-	var tagName = util.decodeURIComponent(req.params.tagName || "");
+	var tagName = api.decodeURIComponent(req.params.tagName || "");
 	var fileDir;
 	var query = req.query;
 	var page = Number(query.page) || 1;
@@ -196,7 +198,7 @@ function getTags(req, res) {
 }
 
 function deleteTag(req, res) {
-	var tagName = util.decodeURIComponent(req.params.tagName);
+	var tagName = api.decodeURIComponent(req.params.tagName);
 	return clone.getRepo(req)
 	.then(function(repo) {
 		return git.Tag.delete(repo, tagName);

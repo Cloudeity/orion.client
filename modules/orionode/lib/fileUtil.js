@@ -10,14 +10,15 @@
  *******************************************************************************/
 /*eslint-env node*/
 /*eslint-disable consistent-return*/
-var ETag = require('./util/etag');
-var path = require('path');
-var Promise = require('bluebird');
-var rimraf = require('rimraf');
-var fse = require('fs-extra');
-var api = require('./api');
-
-var fs = Promise.promisifyAll(require('fs'));
+var ETag = require('./util/etag'),
+	path = require('path'),
+	Promise = require('bluebird'),
+	rimraf = require('rimraf'),
+	fse = require('fs-extra'),
+	api = require('./api'),
+	log4js = require('log4js'),
+	logger = log4js.getLogger("file"),
+	fs = Promise.promisifyAll(require('fs'));
 
 /**
  * Copy of a file/folder to a new location.
@@ -120,10 +121,21 @@ var getMetastore = exports.getMetastore = function(req) {
 	return ms;
 };
 
+/**
+ * Get the file from the workspace
+ * @param {?} req The request
+ * @param {string} rest The rets of the path
+ * @returns {?} 
+ */
 var getFile = exports.getFile = function(req, rest) {
-	if (!rest) return null;
+	if (!rest) {
+		return null;
+	}
 	var store = getMetastore(req);
-	if (rest[0] === "/") rest = rest.substring(1);
+	rest = api.decodeURIComponent(rest);
+	if (rest[0] === "/") {
+		rest = rest.substring(1);
+	}
 	var segments = rest.split("/");
 	var workspaceId = segments.shift();
 	var workspaceDir = store.getWorkspaceDir(workspaceId);
@@ -134,6 +146,12 @@ var getFile = exports.getFile = function(req, rest) {
 	};
 };
 
+/**
+ * Collects the parents for thr given file path
+ * @param {string} fileRoot The root file path
+ * @param {string} relativePath The relative path for the file
+ * @param {boolean} includeFolder If the folder itself should be included
+ */
 var getParents = exports.getParents = function(fileRoot, relativePath, includeFolder) {
 	var segs = relativePath.split('/');
 	if(segs && segs.length > 0 && segs[segs.length-1] === ""){// pop the last segment if it is empty. In this case wwwpath ends with "/".
@@ -215,6 +233,7 @@ var copy = exports.copy = function(srcPath, destPath, callback) {
 	return new Promise(function(fulfill, reject) {
 		return fse.copy(srcPath, destPath, {clobber: true, limit: 32}, function(err) {
 			if (err) {
+				logger.error(err);
 				if (callback) callback(err);
 				return reject(err);
 			}
@@ -230,7 +249,10 @@ var copy = exports.copy = function(srcPath, destPath, callback) {
  */
 exports.withStats = function(filepath, callback) {
 	fs.stat(filepath, function(error, stats) {
-		if (error) { callback(error); }
+		if (error) {
+			logger.error(error);
+			callback(error); 
+		}
 		else {
 			callback(null, stats);
 		}
@@ -421,13 +443,14 @@ exports.handleFilePOST = function(workspaceRoot, fileRoot, req, res, destFile, m
 			return writeFileMetadata(req, res, api.join(fileRoot, destFile.workspaceId), api.join(workspaceRoot, destFile.workspaceId), destFile, stats, /*etag*/null, /*depth*/0, metadataMixins);
 		})
 		.catch(function(err) {
-			api.writeError(500, res, err.message);
+			logger.error(err);
+			return api.writeError(err.code || 500, res, err.message);
 		});
 	};
-	fs.statAsync(destFile.path)
+	return fs.statAsync(destFile.path)
 	.catchReturn({ code: 'ENOENT' }, null) // suppress reject when file does not exist
 	.then(function(stats) {
-		return !!stats; // just return whether the file existed
+		return Boolean(stats); // just return whether the file existed
 	})
 	.then(function(destExists) {
 		var xCreateOptions = (req.headers['x-create-options'] || "").split(",");
@@ -449,26 +472,31 @@ exports.handleFilePOST = function(workspaceRoot, fileRoot, req, res, destFile, m
 			.then(function(stats) {
 				if (isCopy) {
 					return copy(sourceFile.path, destFile.path)
-					.then(function(result) {
-						var eventData = { type: "rename", isDir: stats.isDirectory(), file: destFile, sourceFile: sourceFile };
-						exports.fireFileModificationEvent(eventData);
-						return result;
-					});
+						.then(function(result) {
+							var eventData = { type: "rename", isDir: stats.isDirectory(), file: destFile, sourceFile: sourceFile, req: req};
+							exports.fireFileModificationEvent(eventData);
+							return result;
+						});
 				} else {
 					return fs.renameAsync(sourceFile.path, destFile.path)
-					.then(function(result) {
-						var eventData = { type: "rename", isDir: stats.isDirectory(), file: destFile, sourceFile: sourceFile };
-						exports.fireFileModificationEvent(eventData);
-						return result;
-					});
+						.then(function(result) {
+							var eventData = { type: "rename", isDir: stats.isDirectory(), file: destFile, sourceFile: sourceFile, req: req};
+							exports.fireFileModificationEvent(eventData);
+							return result;
+						})
+						.catch(function rejectRename(err) {
+							var err = new Error("Failed to move project: "+sourceUrl)
+							err.code = 403;
+							throw err;
+						});
 				}
 			})
 			.then(writeResponse.bind(null, destExists))
 			.catch(function(err) {
 				if (err.code === 'ENOENT') {
-					return api.writeError(404, res, 'File not found:' + sourceUrl);
+					return api.writeError(typeof err.code === 'number' || 404, res, 'File not found:' + sourceUrl);
 				}
-				return api.writeError(500, res, err);
+				return api.writeError(err.code || 500, res, err);
 			});
 		}
 		// Just a regular file write
@@ -478,12 +506,11 @@ exports.handleFilePOST = function(workspaceRoot, fileRoot, req, res, destFile, m
 		})
 		.then(function() {
 			if (isDirectory) {
-				exports.fireFileModificationEvent({type: exports.MKDIR, file: destFile});
+				exports.fireFileModificationEvent({type: exports.MKDIR, file: destFile, req: req});
 				return fs.mkdirAsync(destFile.path);
 			} else {
-				var eventData = { type: "write", file: destFile };
+				var eventData = { type: "write", file: destFile, req: req};
 				exports.fireFileModificationEvent(eventData);
-				
 				return fs.writeFileAsync(destFile.path, '');
 			}
 

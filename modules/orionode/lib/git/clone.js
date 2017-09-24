@@ -10,21 +10,20 @@
  *******************************************************************************/
 /*eslint-env node */
 /*eslint no-console:1*/
-var api = require('../api'), writeError = api.writeError, writeResponse = api.writeResponse;
-var git = require('nodegit');
-var url = require("url");
-var path = require("path");
-var fs = require('fs');
-var args = require('../args');
-var async = require('async');
-var fileUtil = require('../fileUtil');
-var util = require('./util');
-var tasks = require('../tasks');
-var express = require('express');
-var bodyParser = require('body-parser');
-var rmdir = require('rimraf');
-var prefs = require('../controllers/prefs');
-var credentialsProvider = require('./credentials');
+var api = require('../api'), writeError = api.writeError, writeResponse = api.writeResponse,
+	git = require('nodegit'),
+	url = require("url"),
+	path = require("path"),
+	fs = require('fs'),
+	args = require('../args'),
+	async = require('async'),
+	fileUtil = require('../fileUtil'),
+	tasks = require('../tasks'),
+	express = require('express'),
+	bodyParser = require('body-parser'),
+	rmdir = require('rimraf'),
+	prefs = require('../prefs'),
+	credentialsProvider = require('./credentials');
 
 module.exports = {};
 
@@ -36,8 +35,9 @@ module.exports.router = function(options) {
 	if (!gitRoot) { throw new Error('options.gitRoot is required'); }
 	if (!workspaceRoot) { throw new Error('options.workspaceRoot is required'); }
 	
-	/* Note that context path was not included in file and workspace root. */
-	var contextPath = options && options.options && options.options.configParams["orion.context.path"] || "";
+	var contextPath = options && options.configParams["orion.context.path"] || "";
+	fileRoot = fileRoot.substring(contextPath.length);
+	workspaceRoot = workspaceRoot.substring(contextPath.length);
 	
 	module.exports.getRepo = getRepo;
 	module.exports.getClones = getClones;
@@ -106,19 +106,27 @@ function cloneJSON(base, location, giturl, parents, submodules) {
 	}
 	return result;
 }
-	
+
+/**
+ * @description Computes the root path to search in to try and find a git repository
+ * @param {String} filePath The full path to the file
+ * @param {String} workspaceDir The full path to the workspace root
+ * @returns {Promise} A promise to open a repository at the given location
+ */
 function getRepoByPath(filePath, workspaceDir) {
-	filePath = util.decodeURIComponent(filePath);
-	while (!fs.existsSync(filePath)) {
-		filePath = path.dirname(filePath);
-		if (filePath.length < workspaceDir.length) return Promise.reject(new Error("Forbidden"));
+	var fPath = api.decodeURIComponent(filePath);
+	while (!fs.existsSync(fPath)) {
+		fPath = path.dirname(fPath);
+		if (!fPath.startsWith(workspaceDir)) {
+        	return Promise.reject(new Error("Forbidden - Access is denied to: " + fPath));
+		}
 	}
  	var ceiling = path.dirname(workspaceDir);
-	if (!fs.statSync(filePath).isDirectory()) {
+	if (!fs.statSync(fPath).isDirectory()) {
 		// get the parent folder if pointing at a file
-		filePath = path.dirname(filePath);
+		fPath = path.dirname(fPath);
 	}
-	return git.Repository.discover(filePath, 0, ceiling).then(function(buf) {
+	return git.Repository.discover(fPath, 0, ceiling).then(function(buf) {
 		return git.Repository.open(buf.toString());
 	});
 }	
@@ -192,7 +200,9 @@ function getClone(req, res) {
 function getClones(req, res, callback) {
 	var repos = [];
 	var done = function(err) {
-		if (err) return writeError(403, res, err.message);
+		if (err) {
+			return writeError(403, res, err.message);
+		}
 		callback(repos);
 	}
 	
@@ -203,7 +213,7 @@ function getClones(req, res, callback) {
 		// get clones from workspace, then need to check GitSniffDir in git user prefs
 		var store = fileUtil.getMetastore(req);
 		store.getUser(req.user.username, function(err, metadata){
-			var gitUserInfo = prefs.readPrefNode(options.options, 'git/config', metadata.properties);
+			var gitUserInfo = prefs.readPrefNode(options, 'git/config', metadata.properties);
 			var gitRepoDirs = gitUserInfo &&  gitUserInfo.userInfo && gitUserInfo.userInfo.GitRepoDir && gitUserInfo.userInfo.GitRepoDir.split(",");
 			if (!gitRepoDirs) {
 				checkDirectory(rootDir, done);
@@ -415,14 +425,19 @@ function postInit(req, res) {
 				return theRepo.createCommit("HEAD", author, committer, "Initial commit", oid, []);
 			})
 			.then(function() {
-				writeResponse(201, res, null, {
-					"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))
-				}, true);
 				var store = fileUtil.getMetastore(req);
-				store.updateProject(file.workspaceId, {projectName: getCloneName(req), contentLocation:file.path});
+				if(store.createRenameDeleteProject) {
+					return store.createRenameDeleteProject(file.workspaceId, {projectName: path.basename(file.path), contentLocation:file.path})
+					.then(function(){
+						writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
+					}).catch(function(err){
+						writeError(err.code || 500, res, err);
+					});
+				}
+				writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
 			})
 			.catch(function(err){
-				writeError(403, res);
+				writeError(403, res, err);
 			});
 
 		});
@@ -523,7 +538,14 @@ function deleteClone(req, res) {
 	rmdir(file.path, function(err) {
 		if (err) return writeError(500, res, err);
 		var store = fileUtil.getMetastore(req);
-		store.updateProject && store.updateProject(file.workspaceId, {originalPath: rest});
+		if(store.createRenameDeleteProject) {
+			return store.createRenameDeleteProject(file.workspaceId, {originalPath: rest})
+			.then(function(){
+				writeResponse(200, res);
+			}).catch(function(err){
+				writeError(err.code || 500, res, err);
+			});
+		}
 		writeResponse(200, res);
 	});
 }
@@ -636,7 +658,7 @@ function handleRemoteError(task, err, cloneUrl) {
 		fullCloneUrl = "ssh://" + cloneUrl;
 	}
 	var u = url.parse(fullCloneUrl, true);
-	var code = 403;
+	var code = err.code || 403;
 	var jsonData;
 	if (err.message && ["credentials", "authentication", "401"].some(function(s) { return err.message.indexOf(s) !== -1; })) {
 		code = 401;
@@ -694,6 +716,13 @@ function postClone(req, res) {
 			return foreachSubmodule(repo, "update", true);
 		}
 	})
+	.then(function(){
+		var store = fileUtil.getMetastore(req);
+		if (store.createRenameDeleteProject) {
+			return store.createRenameDeleteProject(file.workspaceId, {projectName: path.basename(file.path), contentLocation:file.path});
+		}
+		return Promise.resolve();
+	})
 	.then(function() {
 		task.done({
 			HttpCode: 200,
@@ -705,8 +734,6 @@ function postClone(req, res) {
 			Message: "OK",
 			Severity: "Ok"
 		});
-		var store = fileUtil.getMetastore(req);
-		store.updateProject && store.updateProject(file.workspaceId, {projectName: getCloneName(req), contentLocation:file.path});
 	})
 	.catch(function(err) {
 		handleRemoteError(task, err, cloneUrl);
