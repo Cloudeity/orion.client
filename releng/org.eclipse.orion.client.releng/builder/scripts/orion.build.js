@@ -63,11 +63,6 @@
     modules: (function() {
         var modules = [
             { name: "index" },
-            { name: "cfui/apps" },
-            { name: "cfui/logs" },
-            { name: "cfui/plugins/cFDeployPlugin" },
-            { name: "cfui/plugins/cFPlugin" },
-            { name: "cfui/plugins/wizards/generic/genericDeploymentWizard" },
             { name: "compare/compare" },
             { name: "compare-tree/compare-tree" },
             { name: "edit/content/imageViewerPlugin" },
@@ -129,18 +124,12 @@
             { name: "plugins/googleAnalyticsPlugin" },
             { name: "plugins/pageLinksPlugin" },
             { name: "plugins/preferencesPlugin" },
-            { name: "plugins/site/sitePlugin" },
             { name: "plugins/taskPlugin" },
             { name: "plugins/webEditingPlugin" },
             { name: "profile/user-profile" },
             { name: "profile/user-list" },
             { name: "profile/userservicePlugin" },
             { name: "settings/settings" },
-            { name: "shell/plugins/shellPagePlugin" },
-            { name: "shell/shellPage" },
-            { name: "sites/site" },
-            { name: "sites/sites" },
-            { name: "sites/view" },
             { name: "webtools/plugins/webToolsPlugin" },
             { name: "orion/splash" }
         ];
