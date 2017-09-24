@@ -634,8 +634,13 @@ define([
 			name: javascriptMessages['jsHover'],
 			contentType: ["application/javascript", "text/html"] //$NON-NLS-1$ //$NON-NLS-2$
 		});
-		
-	
+
+	provider.registerService("orion.debug.hoverEvaluationProvider", new Hover.JavaScriptDebugHover(astManager, scriptresolver, ternWorker, CUProvider), //$NON-NLS-1$
+		{
+			name: javascriptMessages['jsHoverEvaluationProvider'],
+			contentType: ["application/javascript", "text/html"] //$NON-NLS-1$ //$NON-NLS-2$
+		});
+
 	/**
 	 * Register AST manager as Model Change listener
 	 */
@@ -2298,7 +2303,7 @@ define([
 				{
 					id: "no-shadow-global", //$NON-NLS-1$
 					name: javascriptMessages["noShadowGlobals"],
-					defaultValue: info,
+					defaultValue: ignore,
 					type: "number", //$NON-NLS-1$
 					options: severities
 				},

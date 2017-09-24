@@ -9,16 +9,18 @@
  *     IBM Corporation - initial API and implementation
  *******************************************************************************/
 /*eslint-env node*/
-var express = require('express');
-var bodyParser = require('body-parser');
-var ETag = require('./util/etag');
-var fs = require('fs');
-var mkdirp = require('mkdirp');
-var nodePath = require('path');
-var request = require('request');
-var api = require('./api');
-var fileUtil = require('./fileUtil');
-var writeError = api.writeError;
+var express = require('express'),
+	bodyParser = require('body-parser'),
+	ETag = require('./util/etag'),
+	fs = require('fs'),
+	mkdirp = require('mkdirp'),
+	nodePath = require('path'),
+	request = require('request'),
+	api = require('./api'),
+	writeError = api.writeError,
+	fileUtil = require('./fileUtil'),
+	log4js = require('log4js'),
+	logger = log4js.getLogger("file");
 
 module.exports = function(options) {
 	var fileRoot = options.fileRoot;
@@ -33,6 +35,11 @@ module.exports = function(options) {
 	router.post('*', jsonParser, postFile);
 	router.delete('*', deleteFile);
 
+	fileUtil.addFileModificationListener({handleFileModficationEvent: function(eventData){
+		if(typeof eventData.type === "string" && eventData.type !== "zipadd"){
+			api.logAccess(logger, eventData.req.user.username);
+		}
+	}});
 	return router;
 	
 	function getParam(req, paramName) {
@@ -52,8 +59,7 @@ module.exports = function(options) {
 			stream.pipe(res);
 			stream.on('error', function(e) {
 				// FIXME this is wrong, headers have likely been committed at this point
-				res.writeHead(500, e.toString());
-				res.end();
+				writeError(500, res, e.toString());
 			});
 			stream.on('end', res.end.bind(res));
 		}
@@ -67,6 +73,7 @@ module.exports = function(options) {
 			if (destExists) {
 				fs.readFile(file.path, function (error, data) {
 					if (error) {
+						logger.error(error);
 						writeError(500, res, error);
 						return;
 					}
@@ -110,7 +117,7 @@ module.exports = function(options) {
 								if (this._text.length === 0) { this._text = [""]; }
 							},
 							getText: function() {
-								return this._text.join("");									
+								return this._text.join("");
 							}
 						};
 						for (var i=0; i<diffs.length; i++) {
@@ -132,7 +139,8 @@ module.exports = function(options) {
 					}
 					fs.writeFile(file.path, newContents, function(err) {
 						if (err) {
-							writeError(500, res, error);
+							logger.error(err);
+							writeError(500, res, err);
 							return;
 						}
 						if (failed) {
@@ -140,12 +148,13 @@ module.exports = function(options) {
 							return;
 						}
 						fs.stat(file.path, function(error, stats) {
-							if (err) {
+							if (error) {
+								logger.error(error);
 								writeError(500, res, error);
 								return;
 							}
 							fileUtil.writeFileMetadata(req, res, api.join(fileRoot, file.workspaceId), api.join(workspaceRoot, file.workspaceId), file, stats, ETag.fromString(newContents) /*the new ETag*/);
-							fileUtil.fireFileModificationEvent({ type: "write", file: file, contents: newContents});
+							fileUtil.fireFileModificationEvent({ type: "write", file: file, contents: newContents, req: req});
 						});
 					});
 					
@@ -213,6 +222,7 @@ module.exports = function(options) {
 		function write() {
 			mkdirp(nodePath.dirname(file.path), function(err) {
 				if (err) {
+					logger.error(err);
 					return writeError(500, res, err);
 				}
 				var ws = fs.createWriteStream(file.path);
@@ -223,10 +233,11 @@ module.exports = function(options) {
 							return;
 						}
 						fileUtil.writeFileMetadata(req, res, api.join(fileRoot, file.workspaceId), api.join(workspaceRoot, file.workspaceId), file, stats, etag);
-						fileUtil.fireFileModificationEvent({ type: "write", file: file });
+						fileUtil.fireFileModificationEvent({ type: "write", file: file, req: req});
 					});
 				});
 				ws.on('error', function(err) {
+					logger.error(err);
 					writeError(500, res, err);
 				});
 				if (req.query.source) {
@@ -271,6 +282,7 @@ module.exports = function(options) {
 		var rest = req.params["0"].substring(1);
 		var file = fileUtil.getFile(req, rest);
 		fileUtil.withStatsAndETag(file.path, function(error, stats, etag) {
+			var store = fileUtil.getMetastore(req);
 			function done(error) {
 				if (error) {
 					writeError(500, res, error);
@@ -280,7 +292,7 @@ module.exports = function(options) {
 			}
 			function checkWorkspace(error) {
 				if (!error && file.path === file.workspaceDir) {
-					fileUtil.getMetastore(req).deleteWorkspace(file.workspaceId, done);
+					return store.deleteWorkspace(file.workspaceId, done);
 				}
 				done(error);
 			}
@@ -291,19 +303,28 @@ module.exports = function(options) {
 				return api.sendStatus(412, res);
 			}
 			if (stats.isDirectory()) {
-				fileUtil.rumRuff(file.path, checkWorkspace);
-				
-				if(file.path.substr(file.workspaceDir.length).split("/").length === 3){
-					// Meaning this folder is a project level folder
-					var store = fileUtil.getMetastore(req);
-					store.updateProject && store.updateProject(file.workspaceId, {originalPath: req.baseUrl});
-				}
-				
+				fileUtil.rumRuff(file.path, function(err){
+					if (err) {
+						logger.error(err);
+						return done(err);
+					}
+					if (store.createRenameDeleteProject) {
+						var relativePath = file.path.substr(file.workspaceDir.length);
+						if(relativePath.lastIndexOf("/") === relativePath.length - 1){
+							relativePath = relativePath.substr(0, relativePath.length - 1);
+						}
+						if(relativePath.split("/").length === 2){
+							// Meaning this folder is a project level folder
+							return store.createRenameDeleteProject(file.workspaceId, {originalPath: req.baseUrl})
+							.then(done, done);
+						}
+					}
+					checkWorkspace();
+				});
 				var eventData = { type: "delete", file: file, req: req };
 				fileUtil.fireFileModificationEvent(eventData);
 			} else {
 				fs.unlink(file.path, checkWorkspace);
-				
 				var eventData = { type: "delete", file: file, req: req };
 				fileUtil.fireFileModificationEvent(eventData);
 			}

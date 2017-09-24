@@ -25,9 +25,9 @@ var logger = log4js.getLogger("xfer");
 var yauzl = require("yauzl");
 
 function getUploadsFolder(options) {
-	if (options.options) {
-		return path.join(options.options.configParams['orion.single.user'] ? 
-			path.join(os.homedir(), ".orion") : options.options.workspaceDir, ".uploads");
+	if (options) {
+		return path.join(options.configParams['orion.single.user'] ? 
+			path.join(os.homedir(), ".orion") : options.workspaceDir, ".uploads");
 	}
 	return path.join(os.homedir(), ".orion");
 }
@@ -36,7 +36,7 @@ var UPLOADS_FOLDER;
 var fileRoot;
 
 function checkUserAccess(req, res, next){
-	var uri = req.originalUrl.substring(req.contextPath.length);
+	var uri = (typeof req.contextPath === "string" && req.originalUrl.substring(req.contextPath.length)) || req.originalUrl;
 	// import/export rights depend on access to the file content
 	if (uri.startsWith("/xfer/export/") && uri.endsWith(".zip")){
 		uri = "/file/" + uri.substring("/xfer/export/".length, uri.length - 4) + '/';

@@ -9,11 +9,12 @@
  *     IBM Corporation - initial API and implementation
  *******************************************************************************/
 /*eslint-env node*/
-var url = require('url');
-var events = require('events');
-var log4js = require('log4js');
-var logger = log4js.getLogger("response");
-var orionEE;
+var url = require('url'),
+	events = require('events'),
+	log4js = require('log4js'),
+	logger = log4js.getLogger("response"),
+	orionEE,
+	httpCodeMapping;
 
 /*
  * Sadly, the Orion client code expects http://orionserver/file and http://orionserver/file/ 
@@ -66,6 +67,9 @@ function toURLPath(p) {
  */
 function sendStatus(code, res){
 	try{
+		if (httpCodeMapping) {
+			code = mapHttpStatusCode(code);
+		}
 		setResponseNoCache(res);
 		return res.sendStatus(code);
 	}catch(err){
@@ -86,6 +90,9 @@ function sendStatus(code, res){
 function writeResponse(code, res, headers, body, needEncodeLocation, noCachedStringRes) {
 	try{
 		if (typeof code === 'number') {
+			if (httpCodeMapping) {
+				code = mapHttpStatusCode(code);
+			}
 			res.status(code);
 		}
 		if (headers && typeof headers === 'object') {
@@ -113,38 +120,6 @@ function writeResponse(code, res, headers, body, needEncodeLocation, noCachedStr
 	}
 }
 
-function setResponseNoCache(res){
-	res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate"); // HTTP 1.1.
-	res.setHeader("Pragma", "no-cache"); // HTTP 1.1.
-	res.setHeader("Expires", "0"); // HTTP 1.1.		
-}
-
-
-
-var LocationRegex = /Location$/;
-var PercentReplaceRegex = /\%/g;
-function encodeLocation(obj) {
-	for (var p in obj) {
-		if (p.match(LocationRegex)) {
-			if (Array.isArray(obj[p])) {
-				obj[p].forEach(function(o) {
-					encodeLocation(o);
-				});
-			} else if (typeof obj[p] === "object") {
-				if(obj[p].pathname){
-					obj[p].pathname = obj[p].pathname.replace(PercentReplaceRegex, "%25");
-				}
-				obj[p] = url.format(obj[p]);
-			} else if (obj[p]) {
-				obj[p] = url.format({pathname: obj[p].replace(PercentReplaceRegex, "%25")});
-			}
-		} else if (typeof obj[p] === "object") {
-			encodeLocation(obj[p]);
-		}
-	}
-	return obj;
-}
-
 /**
  * Helper for writing an error JSON response.
  * @param {Number} code
@@ -153,6 +128,9 @@ function encodeLocation(obj) {
  */
 function writeError(code, res, msg) {
 	try{
+		if (httpCodeMapping) {
+			code = mapHttpStatusCode(code);
+		}
 		msg = msg instanceof Error ? msg.message : msg;
 		setResponseNoCache(res);
 		if (typeof msg === 'string') {
@@ -170,6 +148,107 @@ function writeError(code, res, msg) {
 		throw err;
 	}
 }
+
+function setResponseNoCache(res){
+	res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate"); // HTTP 1.1.
+	res.setHeader("Pragma", "no-cache"); // HTTP 1.1.
+	res.setHeader("Expires", "0"); // HTTP 1.1.		
+}
+
+/**
+ * @name mapHttpStatusCode
+ * @description Helper method to change http status code
+ * @param {number} original code
+ * @returns {number} mapped code
+ */
+function mapHttpStatusCode(code){
+	if (typeof httpCodeMapping[code] === "number") {
+		return httpCodeMapping[code];
+	}
+	return code;
+}
+/**
+ * @name setHttpCodeMapping
+ * @description used to set or replace httpCodeMapping
+ * @param {Obejct} the code mapping object
+ */
+function setHttpCodeMapping(mapping) {
+	httpCodeMapping = mapping;
+}
+
+var LocationRegex = /Location$/;
+var PercentReplaceRegex = /\%/g;
+var CommaReplaceRegex = /,/g;
+function encodeLocation(obj) {
+	for (var p in obj) {
+		if (p.match(LocationRegex)) {
+			if (Array.isArray(obj[p])) {
+				obj[p].forEach(function(o) {
+					encodeLocation(o);
+				});
+			} else if (typeof obj[p] === "object") {
+				if(obj[p].pathname){
+					obj[p].pathname = obj[p].pathname.replace(PercentReplaceRegex, "%25").replace(CommaReplaceRegex, "%2C");
+				}
+				obj[p] = url.format(obj[p]);
+			} else if (obj[p]) {
+				obj[p] = url.format({pathname: obj[p].replace(PercentReplaceRegex, "%25").replace(CommaReplaceRegex, "%2C")});
+			}
+		} else if (typeof obj[p] === "object") {
+			encodeLocation(obj[p]);
+		}
+	}
+	return obj;
+}
+
+/**
+ * @name isValidFileName
+ * @description Helper for check file name is valid, doesn't allow slash, backslash inside filename, or empty string or white space as the filename
+ * @param {string} fileName
+ * @returns {boolean}
+ * @since 16.0
+ */
+function isValidProjectName(fileName) {
+	var result;
+	result = ['',' ','/'].some(function(value){
+		return value === fileName;
+	});
+	result |= ['/','\\'].some(function(value){
+		return fileName.indexOf(value) > -1;
+	});
+	return !result;
+}
+
+/**
+ * @name logAccess
+ * @description Helper method to log WorkspaceAccess
+ * @param logger
+ * @param userId
+ */
+function logAccess(logger, userId) {
+	if (userId && process.env.showWSAccessLogs !== "false") {
+		logger.info("WorkspaceAccess: " + userId);
+	}
+}
+
+/**
+ * @name module.exports.decodeURIComponent
+ * @description Helper to properly decode a path.
+ * @function
+ * @param {string} path The path to decode
+ * @returns {string} The decoded path
+ */
+exports.decodeURIComponent = function(path) {
+	var result = path;
+	try {
+		result = decodeURIComponent(result);
+		result = decodeURIComponent(result);
+	} catch (e) {}
+	return result;
+};
+exports.encodeURIComponent = function(path) {
+	return encodeURIComponent(encodeURIComponent(path));
+};
 
 /**
  * Util for stripping host names from URLs on this server. If aUrl indicates a resource on this host (as given by the request's Host header),
@@ -213,5 +292,8 @@ exports.writeError = writeError;
 exports.writeResponse = writeResponse;
 exports.encodeLocation = encodeLocation;
 exports.setResponseNoCache = setResponseNoCache;
+exports.isValidProjectName = isValidProjectName;
 exports.sendStatus = sendStatus;
 exports.getOrionEE = getOrionEE;
+exports.logAccess = logAccess;
+exports.setHttpCodeMapping = setHttpCodeMapping;

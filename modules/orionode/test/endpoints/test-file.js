@@ -18,18 +18,21 @@ var assert = require('assert'),
 	supertest = require('supertest'),
 	testData = require('../support/test_data'),
 	testHelper = require('../support/testHelper'),
-	fileUtil = require('../../lib/fileUtil');
+	fileUtil = require('../../lib/fileUtil'),
+	store = require('../../lib/metastore/fs/store'),
+	file = require('../../lib/file');
 
-var CONTEXT_PATH = '';
-var WORKSPACE_ID = "anonymous-OrionContent";
-var configParams = { "orion.single.user": true };
-var PREFIX = CONTEXT_PATH + '/file/' + WORKSPACE_ID;
-var WORKSPACE = path.join(__dirname, '.test_workspace');
+var CONTEXT_PATH = '',
+	MEATASTORE =  path.join(__dirname, '.test_metadata'),
+	WORKSPACE_ID = "anonymous-OrionContent",
+	configParams = { "orion.single.user": true, "orion.single.user.metaLocation": MEATASTORE},
+	PREFIX = CONTEXT_PATH + '/file/' + WORKSPACE_ID,
+	WORKSPACE = path.join(__dirname, '.test_workspace');
 
 var app = express();
-app.locals.metastore = require('../../lib/metastore/fs/store')({workspaceDir: WORKSPACE, configParams:configParams});
-app.locals.metastore.setup(app);
-app.use(CONTEXT_PATH + '/file' + "*", require('../../lib/file')({gitRoot: CONTEXT_PATH + '/gitapi', fileRoot: CONTEXT_PATH + '/file', workspaceRoot: CONTEXT_PATH + '/workspace'}));
+	app.locals.metastore = store({workspaceDir: WORKSPACE, configParams:configParams});
+	app.locals.metastore.setup(app);
+	app.use(CONTEXT_PATH + '/file' + "*", file({gitRoot: CONTEXT_PATH + '/gitapi', fileRoot: CONTEXT_PATH + '/file', workspaceRoot: CONTEXT_PATH + '/workspace'}));
 var request = supertest.bind(null, app);
 
 function byName(a, b) {
@@ -64,12 +67,18 @@ BufStream.prototype.data = function() {
  * Unit test for the file REST API.
  * see http://wiki.eclipse.org/Orion/Server_API/File_API
  */
-describe('File API', function() {
+describe('File endpoint', function() {
 	beforeEach(function(done) { // testData.setUp.bind(null, parentDir)
-		testData.setUp(WORKSPACE, done);
+		testData.setUp(WORKSPACE, function(){
+			testData.setUpWorkspace(WORKSPACE, MEATASTORE, done);
+		});
 	});
-	after("Remove .test_workspace", function(done) {
-		testData.tearDown(testHelper.WORKSPACE, done);
+	afterEach("Remove .test_workspace", function(done) {
+		testData.tearDown(testHelper.WORKSPACE, function(){
+			testData.tearDown(path.join(MEATASTORE, '.orion'), function(){
+				testData.tearDown(MEATASTORE, done)
+			})
+		});
 	});
 	/**
 	 * http://wiki.eclipse.org/Orion/Server_API/File_API#Actions_on_files
@@ -81,7 +90,7 @@ describe('File API', function() {
 					.then(function(res) {
 						request()
 							.get(PREFIX + '/project/genericFileHandler.txt')
-							.expect(200, 'Tests the generic file handler', done)
+							.expect(200, '', done); // Creating a file and providing contents is not currently supported in a single request. The client must first create a file with a POST as in the previous section, and then perform a PUT on the location specified in the POST response to provide file contents.
 					});
 			});
 			/**
@@ -98,11 +107,11 @@ describe('File API', function() {
 					.expect(200, done);
 			});
 			it("testGzippedResponseCharset", function(done) {
-				var fileName = encodeURIComponent('\u4f60\u597d\u4e16\u754c.txt');
-				testHelper.createFile(request, '/project', '/'+fileName, 'Odd contents')
+				var fileName = '\u4f60\u597d\u4e16\u754c.txt';
+				testHelper.createFile(request, '/project', fileName, 'Odd contents')
 					.then(function(res) {
 						request()
-							.get(PREFIX + '/project/'+fileName+'?parts=meta')
+							.get(PREFIX + '/project/'+encodeURIComponent(fileName)+'?parts=meta')
 							.set('Charset', 'UTF-8')
 							.set('Content-Type', 'text/plain')
 							.end(function(err, res) {
@@ -1156,7 +1165,25 @@ describe('File API', function() {
 					});
 			});
 		});
-		it("testCopyFileOverwrite");
+		it("testCopyFileOverwrite", function(done) {
+			request()
+				.post(PREFIX + '/project/my%20folder') //create a file will will overwrite
+				.set('Slug', 'fizz2.txt')
+				.expect(201)
+				.end(function(err, res) {
+					testHelper.throwIfError(err);
+					request()
+						.post(PREFIX + '/project/my%20folder')
+						.set('Slug', 'fizz2.txt')
+						.set('X-Create-Options', 'copy,overwrite')
+						.send({ Location: PREFIX + '/project/fizz.txt' })
+						.expect(200) //spec'd to return 200 of over-writing move
+						.end(function(err, res) {
+							throwIfError(err);
+							done();
+						});
+				});
+		});
 		it('copy a file', function(done) {
 			request()
 			.post(PREFIX + '/project/my%20folder')
@@ -1338,5 +1365,23 @@ describe('File API', function() {
 					done();
 				});
 		});
+		it("Bug 521429", function(done) {
+			testHelper.createDir(request, '/project', '/moveTo,Folder')
+			   .then(function(res) {
+				   testHelper.createFile(request, "/project/moveTo,Folder", "fizz.txt")
+				   	.then(function(res) {
+						request()
+						.post(PREFIX + '/project/moveTo%2CFolder') //move it to
+						.set('X-Create-Options', 'move')
+						.set('Slug', 'fizz1.txt')
+						.send({Location: PREFIX + '/project/moveTo,Folder/fizz.txt'})
+						.expect(201)
+						.end(function(err, res) {
+							assert.equal(res.body.Location, "/file/anonymous-OrionContent/project/moveTo%2CFolder/fizz1.txt")
+							done();
+						});
+					})
+			   })
+	   });
 	});
 });

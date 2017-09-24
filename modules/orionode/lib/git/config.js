@@ -15,7 +15,6 @@ var args = require('../args');
 var clone = require('./clone');
 var express = require('express');
 var bodyParser = require('body-parser');
-var util = require('./util');
 var git = require('nodegit');
 var log4js = require('log4js');
 var logger = log4js.getLogger("git");
@@ -27,6 +26,9 @@ module.exports.router = function(options) {
 	var gitRoot = options.gitRoot;
 	if (!fileRoot) { throw new Error('options.fileRoot is required'); }
 	if (!gitRoot) { throw new Error('options.gitRoot is required'); }
+	
+	var contextPath = options && options.configParams["orion.context.path"] || "";
+	fileRoot = fileRoot.substring(contextPath.length);
 	
 	function checkUserAccess(req, res, next){
 		var uri = req.originalUrl.substring(req.baseUrl.length);
@@ -54,13 +56,13 @@ function configJSON(key, value, fileDir) {
 	return {
 		"Key": key,
 		"CloneLocation": gitRoot + "/clone" + fileDir,
-		"Location": gitRoot + "/config/" + util.encodeURIComponent(key) + "/clone" + fileDir,
+		"Location": gitRoot + "/config/" + api.encodeURIComponent(key) + "/clone" + fileDir,
 		"Value": Array.isArray(value) ? value : [value]
 	};
 }
 
 function getAConfig(req, res) {
-	var key = util.decodeURIComponent(req.params.key);
+	var key = api.decodeURIComponent(req.params.key);
 	clone.getRepo(req)
 	.then(function(repo) {
 		var fileDir = clone.getfileDir(repo,req);
@@ -102,7 +104,7 @@ function getConfig(req, res) {
 				return writeError(400, res, err.message);
 			}
 			var waitFor = Promise.resolve();
-			if(options && options.options && options.options.configParams["orion.single.user"]){
+			if(options && options.configParams["orion.single.user"]){
 				var user = config.user || (config.user = {});
 				if(!user.name){
 					waitFor = git.Config.openDefault().then(function(defaultConfig){
