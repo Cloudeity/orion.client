@@ -98,7 +98,7 @@ FsMetastore.prototype.lock = function(userId, shared) {
 	});
 };
 
-FsMetastore.prototype.setup = function(app) {
+FsMetastore.prototype.setup = function(options) {
 	if (!this._isSingleUser) {
 		/* verify that existing metadata in this workspace will be usable by this server */
 		var path = nodePath.join(this._options.workspaceDir, FILENAME_METASTORE);
@@ -145,7 +145,7 @@ FsMetastore.prototype.setup = function(app) {
 	}
 
 	// Used only for single user case (Electron or local debug)
-	app.use(/* @callback */ function(req, res, next) {
+	options.authenticate = [function(req, res, next) {
 		if (this._isSingleUser) {
 			this.getUser("anonymous", function(err, user) {
 				if (err) {
@@ -171,7 +171,7 @@ FsMetastore.prototype.setup = function(app) {
 		} else {
 			next();
 		}
-	}.bind(this));
+	}.bind(this)];
 };
 
 Object.assign(FsMetastore.prototype, {
@@ -259,9 +259,7 @@ Object.assign(FsMetastore.prototype, {
 							return reject(error);
 						}
 						if (!metadata) {
-							var err = new Error(String("could not read workspace: ").concat(workspaceId));
-							err.code = 404;
-							return reject(err);
+							return resolve(null);
 						}
 						var workspace = {
 							"id": metadata.UniqueId,
@@ -273,9 +271,8 @@ Object.assign(FsMetastore.prototype, {
 						propertyKeys.forEach(function(propertyKey) {
 							workspace.properties[propertyKey] = metadata.Properties[propertyKey];
 							// TODO password needs to be handled specifically since it needs to be decrypted. (referrence setProperties line 967)
-							// TODO handle userPropertyCache (referrence setProperties line 972)
 						});
-						resolve(workspace);
+						return resolve(workspace);
 					});
 				}.bind(this));
 			}.bind(this)).then(
@@ -311,16 +308,18 @@ Object.assign(FsMetastore.prototype, {
 						if (error) {
 							return reject(error);
 						}
-						
-						var index = metadata && metadata.WorkspaceIds.indexOf(workspaceId) || -1;
+						var index = -1;
+						if (metadata && metadata.WorkspaceIds) {
+							index = metadata.WorkspaceIds.indexOf(workspaceId);
+						}
 						index !== -1 && metadata.WorkspaceIds.splice(index, 1);
 						metadata.Properties["UserRights"] = accessRights.removeWorkspaceAccess(metadata.Properties["UserRights"],workspaceId);
 						this._updateUserMetadata(userId,  metadata, function(error) {
 							if (error) {
 								return reject(error);
 							}
-							fs.unlinkAsync(getWorkspaceMetadataFileName(this._options, workspaceId)).catchReturn({ code: 'ENOENT' }, null);
-							resolve();
+							fs.unlinkAsync(getWorkspaceMetadataFileName(this._options, workspaceId)).catchReturn({ code: 'ENOENT' }, null)
+							.then(resolve, reject);
 						}.bind(this));				
 					}.bind(this));
 				}.bind(this));
@@ -442,7 +441,6 @@ Object.assign(FsMetastore.prototype, {
 								workspaces:[]
 							}); // TODO successful case needs to return user data including isAuthenticated, username, email, authToken for user.js
 						});
-						// TODO Save User info in cache for quick referrence
 					}.bind(this),
 					reject /* error case */
 				);
@@ -476,7 +474,6 @@ Object.assign(FsMetastore.prototype, {
 							created_at:  new Date(parseInt(metadata.Properties.AccountCreationTimestamp, 10))
 						};
 						// TODO password needs to be handled specifically since it needs to be decrypted. (referrence setProperties line 967)				
-						// TODO handle userPropertyCache (referrence setProperties line 972)
 						metadataToServe.workspaces = metadata.WorkspaceIds || [];
 						return resolve(metadataToServe);
 					}

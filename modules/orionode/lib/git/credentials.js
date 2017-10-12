@@ -14,9 +14,6 @@ var url = require('url');
 
 module.exports = {};
 
-var GITLAB = "gitlab.com";
-var OAUTH2 = "oauth2";
-
 var tokenProviders = [];
 
 module.exports.addTokenProvider = function(value) {
@@ -50,8 +47,7 @@ module.exports.getCredentials = function(uri, user) {
 				function(result) {
 					if (++doneCount <= tokenProviders.length) {
 						doneCount = tokenProviders.length;
-						var username = url.parse(uri).host.toLowerCase() === GITLAB ? OAUTH2 : result;
-						fulfill(git.Cred.userpassPlaintextNew(username, result));
+						fulfill(git.Cred.userpassPlaintextNew(result.username, result.password));
 					}
 				},
 				function(error) {

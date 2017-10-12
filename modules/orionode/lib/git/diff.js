@@ -9,19 +9,20 @@
  *	 IBM Corporation - initial API and implementation
  *******************************************************************************/
 /*eslint-env node */
-var git = require('nodegit');
-var url = require('url');
-var api = require('../api'), writeError = api.writeError, writeResponse = api.writeResponse;
-var clone = require('./clone');
-var fs = require('fs');
-var path = require('path');
-var mkdirp = require('mkdirp');
-var mDiff = require('diff');
-var request = require('request');
-var multiparty = require('multiparty');
-var express = require('express');
-var bodyParser = require('body-parser');
-var async = require('async');
+var git = require('nodegit'),
+	url = require('url'),
+	api = require('../api'), writeError = api.writeError, writeResponse = api.writeResponse,
+	clone = require('./clone'),
+	fs = require('fs'),
+	path = require('path'),
+	mkdirp = require('mkdirp'),
+	mDiff = require('diff'),
+	request = require('request'),
+	multiparty = require('multiparty'),
+	express = require('express'),
+	bodyParser = require('body-parser'),
+	async = require('async'),
+	responseTime = require('response-time');
 
 module.exports = {};
 
@@ -38,6 +39,7 @@ module.exports.router = function(options) {
 
 	return express.Router()
 	.use(bodyParser.json())
+	.use(responseTime({digits: 2, header: "X-GitapiDiff-Response-Time", suffix: true}))
 	.use(options.checkUserAccess)
 	.get(fileRoot + '*', getDiff)
 	.get('/:scope'+ fileRoot + '*', getDiff)
@@ -66,8 +68,8 @@ function getDiff(req, res) {
 			URIs = {
 				"BaseLocation": getBaseLocation(scope, p),
 				"CloneLocation": gitRoot + "/clone" + fileDir,
-				"Location": gitRoot + "/diff/" + api.encodeURIComponent(scope) + fileDir + filePath,
-				"NewLocation": getNewLocation(scope, p),
+				"Location": path.join(gitRoot, "/diff", api.encodeURIComponent(scope), fileDir, filePath),
+				"NewLocation": getNewLocation(scope, p, req.contextPath),
 				"OldLocation": getOldLocation(scope, p),
 				"Type": "Diff"
 			};
@@ -148,12 +150,15 @@ function getOldLocation(scope, path) {
 	return {pathname: gitRoot + "/commit/" + api.encodeURIComponent(scope) + path, query: {parts: "body"}};
 }
 
-function getNewLocation(scope, path) {
+function getNewLocation(scope, path ,contextPath) {
 	if (scope.indexOf("..") !== -1) {
 		var commits = scope.split("..");
 		return {pathname: gitRoot + "/commit/" + api.encodeURIComponent(commits[1]) + path, query: {parts: "body"}};
 	} else if (scope === "Cached") {
 		return gitRoot + "/index" + path;
+	}
+	if (path.startsWith(fileRoot)) {
+		path = contextPath + path; // Since git endpoint's fileRoot doesn't have contextPath part
 	}
 	return path;
 }

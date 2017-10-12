@@ -23,7 +23,8 @@ var api = require('../api'), writeError = api.writeError, writeResponse = api.wr
 	bodyParser = require('body-parser'),
 	rmdir = require('rimraf'),
 	prefs = require('../prefs'),
-	credentialsProvider = require('./credentials');
+	credentialsProvider = require('./credentials'),
+	responseTime = require('response-time');
 
 module.exports = {};
 
@@ -66,6 +67,7 @@ module.exports.router = function(options) {
 
 	return express.Router()
 	.use(bodyParser.json())
+	.use(responseTime({digits: 2, header: "X-GitapiClone-Response-Time", suffix: true}))
 	.use(checkUserAccess) // Use specified checkUserAceess implementation instead of the common one from options
 	.get(workspaceRoot + '*', getClone)
 	.get(fileRoot + '*', getClone)
@@ -396,15 +398,43 @@ function postInit(req, res) {
 		if (!file) {
 			return writeError(400, res, "Invalid parameters");
 		}
-		
-		var theRepo, index, author, committer;
+		if(req.body.Path){
+			// If the directory exists
+			initRepo(file, req, res)
+			.then(function(){
+				writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
+			}).catch(function(err){
+				writeError(403, res, err);
+			});
+		} else if (req.body.Location) {
+			// If the directory doesn't exist
+			initRepo(file, req, res)
+			.then(function(){
+				var store = fileUtil.getMetastore(req);
+				if(store.createRenameDeleteProject) {
+					return store.createRenameDeleteProject(file.workspaceId, {projectName: path.basename(file.path), contentLocation:file.path})
+					.then(function(){
+						writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
+					}).catch(function(err){
+						writeError(err.code || 500, res, err);
+					});
+				}
+				writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
+			}).catch(function(err){
+				writeError(403, res, err);
+			});
+		}
+	}
+}
 
+function initRepo(file, req, res){
+	var theRepo, index, author, committer;
+	return new Promise(function(fulfill, reject) {
 		fs.mkdir(file.path, function(err) {
 			if (err && err.code !== "EEXIST") {
-				return writeError(400, res);
+				return writeError(400, res, err);
 			}
-
-			git.Repository.init(file.path, 0)
+			return git.Repository.init(file.path, 0)
 			.then(function(repo) {
 				theRepo = repo;
 				return configRepo(repo, req.body.GitName, req.body.GitMail);
@@ -422,26 +452,12 @@ function postInit(req, res) {
 
 				// Since we're creating an inital commit, it has no parents. Note that unlike
 				// normal we don't get the head either, because there isn't one yet.
-				return theRepo.createCommit("HEAD", author, committer, "Initial commit", oid, []);
+				return fulfill(theRepo.createCommit("HEAD", author, committer, "Initial commit", oid, []));
+			}).catch(function(e){
+				return reject(e);
 			})
-			.then(function() {
-				var store = fileUtil.getMetastore(req);
-				if(store.createRenameDeleteProject) {
-					return store.createRenameDeleteProject(file.workspaceId, {projectName: path.basename(file.path), contentLocation:file.path})
-					.then(function(){
-						writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
-					}).catch(function(err){
-						writeError(err.code || 500, res, err);
-					});
-				}
-				writeResponse(201, res, null, {"Location": gitRoot + "/clone" + fileRoot + "/" + file.workspaceId + api.toURLPath(file.path.substring(file.workspaceDir.length))}, true);
-			})
-			.catch(function(err){
-				writeError(403, res, err);
-			});
-
 		});
-	}
+	});
 }
 
 function putClone(req, res) {
@@ -659,7 +675,7 @@ function handleRemoteError(task, err, cloneUrl) {
 	}
 	var u = url.parse(fullCloneUrl, true);
 	var code = err.code || 403;
-	var jsonData;
+	var jsonData, message = err.message;
 	if (err.message && ["credentials", "authentication", "401"].some(function(s) { return err.message.indexOf(s) !== -1; })) {
 		code = 401;
 		jsonData = {
@@ -670,13 +686,16 @@ function handleRemoteError(task, err, cloneUrl) {
 			"Url": cloneUrl,
 			"User": u.auth
 		};
+	} else if (err.message && ["404"].some(function(s) { return err.message.indexOf(s) !== -1; })) {
+		code = 404;
+		message = "Remote repository does not exist";
 	}
 	task.done({
 		HttpCode: code,
 		Code: 0,
 		JsonData: jsonData,
-		DetailedMessage: err.message,
-		Message: err.message,
+		DetailedMessage: message,
+		Message: message,
 		Severity: "Error"
 	});
 }

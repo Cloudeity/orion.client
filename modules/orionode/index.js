@@ -17,7 +17,10 @@ var express = require('express'),
 	api = require('./lib/api'),
 	checkRights = require('./lib/accessRights').checkRights,
 	log4js = require('log4js'),
-	logger = log4js.getLogger("response");
+	socketio = require('socket.io'),
+	ttyShell = require('./lib/tty_shell'),
+	logger = log4js.getLogger("response"),
+	responseTime = require('response-time');
 
 var LIBS = path.normalize(path.join(__dirname, 'lib/')),
 	MINIFIED_ORION_CLIENT = path.normalize(path.join(__dirname, "lib/orion.client")),
@@ -56,15 +59,16 @@ function handleError(err) {
 
 function startServer(options) {
 	options = options || {};
+	options.configParams = options.configParams || {};
 	if(options.configParams["additional.modules.path"]){
 		var addModulePath = require('app-module-path');
 		options.configParams["additional.modules.path"].split(",").forEach(function(modulePath){
 			addModulePath.addPath(path.join(__dirname, modulePath));
 		});
 	}
-	options.configParams = options.configParams || {};
 	options.maxAge = typeof options.maxAge === "number" ? options.maxAge : undefined;
-	var contextPath = options && options.configParams["orion.context.path"] || "";
+	var contextPath = options.configParams["orion.context.path"] || "";
+	var listenContextPath = options.configParams["orion.context.listenPath"] || false;
 	if (typeof options.workspaceDir !== "string") {
 		throw new Error("workspaceDir is required");
 	}
@@ -74,6 +78,8 @@ function startServer(options) {
 
 		options.app = app;
 		
+		app.use(responseTime({digits: 2, header: "X-Total-Response-Time", suffix: true}));
+		
 		Object.assign(options, {
 			sharedWorkspaceFileRoot: contextPath + '/sharedWorkspace/tree/file',
 			taskRoot: contextPath + '/task',
@@ -81,7 +87,7 @@ function startServer(options) {
 			fileRoot: contextPath + '/file',
 			gitRoot: contextPath + '/gitapi'
 		});
-
+		
 		function checkAuthenticated(req, res, next) {
 			if (!req.user) {
 				api.writeError(401, res, "Not authenticated");
@@ -121,17 +127,17 @@ function startServer(options) {
 			metastoreFactory = require('./lib/metastore/fs/store');
 		}
 		options.metastore = app.locals.metastore = metastoreFactory(options);
-		app.locals.metastore.setup(app);
+		app.locals.metastore.setup(options);
 		options.authenticate = [
 			expressSession({
 				resave: false,
 				saveUninitialized: false,
 				secret: 'keyboard cat',
-				store: app.locals.sessionStore // TODO by default MemoryStore is not designed for a production environment, as it will leak memory, and will not scale past a single process.
+				store: options.sessionStore // TODO by default MemoryStore is not designed for a production environment, as it will leak memory, and will not scale past a single process.
 			}),
 			passport.initialize(),
 			passport.session()
-		];
+		].concat(options.authenticate || []);
 		
 		loadEndpoints(false);
 		let CloudFoundry = require('./lib/cf').CloudFoundry;
@@ -153,6 +159,13 @@ function startServer(options) {
 			app.use('/sharedWorkspace', options.authenticate, checkAuthenticated, require('./lib/sharedWorkspace').router(options));
 		}
 		
+		var io = socketio.listen(options.server, { 'log level': 1, path: (listenContextPath ? contextPath : '' ) + '/socket.io' });
+		ttyShell.install(options, io);
+		if (options.configParams["orion.debug.enabled"]) {
+			var debugServer = require(options.configParams["debug.server.module"]);
+			debugServer.install(options, io);
+		}
+		
 		// Static files
 		app.use('/xterm', express.static(path.join(__dirname, 'node_modules', 'xterm', 'dist')));
 		
@@ -161,9 +174,12 @@ function startServer(options) {
 			// It's dev time
 			staticCacheOption = {
 				maxAge: options.maxAge
-			}
+			};
 		} else {
 			staticCacheOption = {
+				/**
+				 * @callback
+				 */
 				setHeaders: function(res, urlPath, stat){
 					var ext = path.extname(urlPath);
 					if(path.basename(path.dirname(urlPath)) === "requirejs"){
@@ -174,13 +190,13 @@ function startServer(options) {
 						res.setHeader("Cache-Control", _24_HOURS);
 					}
 				}
-			}
+			};
 		}
 		if (fs.existsSync(MINIFIED_ORION_CLIENT)) {
 			app.use(express.static(MINIFIED_ORION_CLIENT, Object.assign({dotfiles: 'allow'}, staticCacheOption)));
 		} else {
-			var prependStaticAssets = options.configParams["prepend.static.assets"] && options.configParams["prepend.static.assets"].split(",") || [];
-			var appendStaticAssets = options.configParams["append.static.assets"] && options.configParams["append.static.assets"].split(",") || [];
+			var prependStaticAssets = (options.configParams["prepend.static.assets"] || "").split(",");
+			var appendStaticAssets = (options.configParams["append.static.assets"] || "").split(",");
 			var orionode_static = path.normalize(path.join(LIBS, 'orionode.client/'));
 			if(options.configParams["orion.collab.enabled"]){
 				appendStaticAssets.push('./bundles/org.eclipse.orion.client.collab/web');
@@ -188,7 +204,7 @@ function startServer(options) {
 			app.use(require('./lib/orion_static')(Object.assign({orionClientRoot: ORION_CLIENT, orionode_static: orionode_static, prependStaticAssets: prependStaticAssets, appendStaticAssets: appendStaticAssets}, staticCacheOption)));
 		}
 		//error handling
-		app.use(function(err, req, res, next) {
+		app.use(/* @callback */ function(err, req, res, next) { // 'next' has to be here, so that this callback works as a final error handler instead of a normal middleware
 			logger.error(req.originalUrl, err);
 			if (res.finished) {
 				return;

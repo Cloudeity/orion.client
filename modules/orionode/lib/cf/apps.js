@@ -85,6 +85,7 @@ function respondAppGetRequest(resp,task){
 		Message: "Ok",
 		Severity: "Ok"
 	});
+	return Promise.resolve();
 }
 function getAppwithoutName(req, task, appTarget){
 	var appsArray = [];
@@ -462,7 +463,7 @@ function createApp(req, appTarget){
 		var body = {
 			"space_guid": appTarget.Space.metadata.guid,
 			"name":theApp.appName,
-			"instances":theApp.manifest.applications[0].instances || 1,
+			"instances": Number(theApp.manifest.applications[0].instances) || 1,
 			"buildPack":theApp.manifest.applications[0].buildpack || null,
 			"command":theApp.manifest.applications[0].command,	
 			"memory": normalizeMemoryMeasure(theApp.manifest.applications[0].memory),
@@ -843,7 +844,7 @@ function archiveTarget (filePath, req){
 			zip.pipe(output);
 			return xfer.write(zip, filePath, filePath)
 			.then(function() {
-				var eventData = { type: "zipadd", req: req, zip: zip };
+				var eventData = { type: fileUtil.ChangeType.ZIPADD, req: req, zip: zip };
 				fileUtil.fireFileModificationEvent(eventData);
 			
 				zip.finalize();
