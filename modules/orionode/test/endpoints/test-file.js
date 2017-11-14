@@ -1601,15 +1601,17 @@ describe('File endpoint', function() {
 				.then(function(res) {
 					testHelper.createFile(request, '/project', fileNameLowerCase2, 'Odd contents2')
 						.then(function(res) {
+							// Try rename testrenamefilechangecase to testRenameFileChangeCase
 							request()
 							.post(PREFIX + '/project/')
 							.set('Slug', fileNameUpperCase)
 							.set('X-Create-Options', 'move,no-overwrite')
 							.send({ Location: PREFIX + '/project/' + fileNameLowerCase})
-							.expect(200)
 							.end(function(err, res) {
+								assert(res.statusCode === 200 || res.statusCode === 201); // The statusCode returned from rename, might be 200 or 201 depends on the filesystem.
 								testHelper.throwIfError(err);
 								assert.equal(res.body.Name, fileNameUpperCase);
+								// Try rename testRenameFileChangeCase to testrenamefilechangecase2
 								request()
 								.post(PREFIX + '/project/')
 								.set('Slug', fileNameLowerCase2)
@@ -1658,7 +1660,7 @@ describe('File endpoint', function() {
 						.send({Location: PREFIX + '/project/moveTo%2CFolder/fizz.txt'})
 						.expect(201)
 						.end(function(err, res) {
-							assert.equal(res.body.Location, CONTEXT_PATH + "/file/anonymous-OrionContent/project/moveTo%2CFolder/fizz1.txt")
+							assert.equal(res.body.Location, PREFIX + "/project/moveTo%2CFolder/fizz1.txt");
 							done();
 						});
 					})

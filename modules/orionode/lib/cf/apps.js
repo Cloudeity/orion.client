@@ -10,27 +10,26 @@
  *******************************************************************************/
 /*eslint-env node */
 var express = require("express");
-var api = require("../api"), writeError = api.writeError;
+var api = require("../api");
 var fileUtil = require("../fileUtil");
 var bodyParser = require("body-parser");
 var target = require("./target");
 var tasks = require("../tasks");
 var manifests = require("./manifests");
 var domains = require("./domains");
-var xfer = require("../xfer");
+var plans = require("./plans");
 var fs = require("fs");
 var path = require("path");
 var async = require("async");
-var archiver = require("archiver");
-var os = require("os");
 var Promise = require("bluebird");
-var bluebirdfs = Promise.promisifyAll(require("fs"));
-var crypto = require("crypto");
 var extService = require("./extService");
-var LRU = require("lru-cache");
+var LRU = require("lru-cache-for-clusters-as-promised");
+var mkdirp = require('mkdirp');
+var log4js = require('log4js');
+var logger = log4js.getLogger("cf");
 
 // Caching for already located targets
-var appCache = LRU({max: 1000, maxAge: 30000 });
+var appCache = new LRU({max: 1000, maxAge: 30000, namespace: "apps"});
 
 module.exports.router = function(options) {
 	var fileRoot = options.fileRoot;
@@ -39,6 +38,7 @@ module.exports.router = function(options) {
 	module.exports._getAppwithAppName = _getAppwithAppName;
 	module.exports.getServiceGuid = getServiceGuid;
 	module.exports.createService = createService;
+	module.exports.expireAppCache = expireAppCache;
 	
 	return express.Router()
 	.use(bodyParser.json())
@@ -51,7 +51,7 @@ function getapps(req, res){
 	var encodedContentLocation =  req.query.ContentLocation;
 	var targetRequest = req.query.Target ? JSON.parse(req.query.Target) : null;
 	target.computeTarget(req.user.username, target.fullTarget(req,targetRequest))
-	 .then(function(appTarget){
+	.then(function(appTarget){
 		if(encodeName){
 			return getAppwithAppName(req.user.username, task,encodeName,appTarget);
 		}else if(encodedContentLocation) {
@@ -61,7 +61,7 @@ function getapps(req, res){
 				.then(function(manifest){
 					if(manifest && manifest.applications &&  manifest.applications[0]){
 						return getAppwithAppName(req.user.username, task, manifest.applications[0].name, appTarget);
-					}			
+					}
 				});
 			}
 		}else{
@@ -73,7 +73,7 @@ function getapps(req, res){
 }
 function respondAppGetRequest(resp,task){
 	if(!resp){
-		var errorStatus = new Error("Apps can not be found");
+		var errorStatus = new Error("Application not found");
 		errorStatus.code = "404";
 		return Promise.reject(errorStatus);
 	}
@@ -125,33 +125,50 @@ function getAppwithAppName(userId, task,encodeName, appTarget){
 		return respondAppGetRequest(result && result.appJson,task);
 	});
 }
+function getAppCacheKey(appTarget, encodeName) {
+	return appTarget.Url + "-" + appTarget.Org.entity.name + "-" + appTarget.Space.entity.name + "-" + encodeName;
+}
+function expireAppCache(appTarget, appName) {
+	var cacheKey = getAppCacheKey(appTarget, appName);
+	return appCache.del(cacheKey);
+}
 function _getAppwithAppName(userId, encodeName, appTarget){
 	var app = {};
 	
-	var cacheKey = appTarget.Url + appTarget.Org + appTarget.Space + encodeName;
-	if (appCache.get(cacheKey)) {
-		return Promise.resolve(appCache.get(cacheKey));
-	}
-	return target.cfRequest("GET", userId, appTarget.Url + appTarget.Space.entity.apps_url, {"q": "name:"+api.encodeURIComponent(encodeName),"inline-relations-depth":"1"}, null, null, null, appTarget)
-	.then(function(result){
-		if(!result.resources || result.resources && result.resources.length === 0){
-			return null;
+	var cacheKey = getAppCacheKey(appTarget, encodeName);
+	return appCache.get(cacheKey)
+	.then(function(value) {
+		if (value) {
+			return value;
 		}
-		app.appUrl = result.resources[0].metadata.url;
-		app.appMetadata = result.resources[0].metadata;
-		return target.cfRequest("GET", userId, appTarget.Url + app.appUrl +"/summary", null, null, null, null, appTarget)
+		return target.cfRequest("GET", userId, appTarget.Url + appTarget.Space.entity.apps_url, {"q": "name:"+api.encodeURIComponent(encodeName),"inline-relations-depth":"1"}, null, null, null, appTarget)
 		.then(function(result){
-			app.summaryJson = result;
-			return target.cfRequest("GET", userId, appTarget.Url + app.appUrl +"/instances", null, null, null, null, appTarget);
-		}).then(function(result){
-			app.instanceJson = result;
-			var appJson;
-			appJson = app.summaryJson;
-			appJson.instances_details = app.instanceJson;
-			
-			var appInfo = {"appJson":appJson,"app":app};
-			appCache.set(cacheKey, appInfo);
-			return appInfo;
+			if(!result.resources || result.resources && result.resources.length === 0){
+				return null;
+			}
+			app.appUrl = result.resources[0].metadata.url;
+			app.appMetadata = result.resources[0].metadata;
+			return target.cfRequest("GET", userId, appTarget.Url + app.appUrl +"/summary", null, null, null, null, appTarget)
+			.then(function(result){
+				app.summaryJson = result;
+				var appJson;
+				appJson = app.summaryJson;
+				appJson.instances_details = app.instanceJson;
+				var appInfo = {"appJson":appJson,"app":app};
+				return target.cfRequest("GET", userId, appTarget.Url + app.appUrl +"/instances", null, null, null, null, appTarget)
+				.then(function(result){
+					app.instanceJson = result;
+				})
+				.catch(function() {
+					//ignore
+				})
+				.then(function() {
+					return appCache.set(cacheKey, appInfo)
+					.then(function() {
+						return appInfo;
+					});
+				});
+			});
 		});
 	});
 }
@@ -182,6 +199,8 @@ function putapps(req, res){
 		//appPackageType:
 		//appUrl:
 		//appMetadata:
+		//deploymentPackager:
+		//command
 	//}
 	var task = new tasks.Task(res,false,false,0,false);
 	var targetRequest = req.body.Target;
@@ -199,6 +218,7 @@ function putapps(req, res){
 	var appName = req.body.Name;
 	var contentLocation = toOrionLocation(req, req.body.ContentLocation);
 	theApp.appStore = toAppLocation(req, req.body.ContentLocation);
+	theApp.deploymentPackager = req.body.Packager;
 	var manifestJSON = req.body.Manifest;
 	var instrumentationJSON = req.body.Instrumentation;
 	var userTimeout = req.body.Timeout &&  req.body.Timeout > 0 ? req.body.Timeout:0;
@@ -207,8 +227,8 @@ function putapps(req, res){
 	var restart;
 	var appTarget;
 	return target.computeTarget(req.user.username, target.fullTarget(req,targetRequest))
-	 .then(function(resultTarget){
-	 	appTarget = resultTarget;
+	.then(function(resultTarget){
+		appTarget = resultTarget;
 		if(contentLocation && !state){
 			var waitFor;
 			if(manifestJSON){
@@ -238,8 +258,10 @@ function putapps(req, res){
 				}
 			});
 	}).then(function(){
+		theApp.command = theApp.manifest && theApp.manifest.applications[0].command || "";
 		instrumentManifest(theApp.manifest,instrumentationJSON);
 		theApp.appName = appName ? appName : manifestAppName;
+		logger.debug("Put application=" + theApp.appName);
 		if(app){
 			var waitFor;
 			if(state === "Started"){
@@ -337,32 +359,32 @@ function respondAppPutRequest(task,status){
 		Message: "Ok",
 		Severity: "Ok"
 	});
+	logger.debug("Put application done=" + theApp.appName);
 	return Promise.resolve();
 }
 
 function startApp(userId, userTimeout ,appTarget){
-	var cacheKey = appTarget.Url + appTarget.Org + appTarget.Space + theApp.appName;
-	appCache.del(cacheKey);
+	expireAppCache(appTarget, theApp.appName);
 	
 	var DEFAULT_TIMEOUT = 60;
 	var MAX_TIMEOUT = 180;
 	var body = {"console":true, "state":"STARTED"};
+	logger.debug("Starting application=" + theApp.appName);
 	return target.cfRequest("PUT", userId, appTarget.Url + theApp.appUrl, {"inline-relations-depth":"1"}, JSON.stringify(body), null, null, appTarget)
-	.then(function(parsedBody) {
-		if (parsedBody.error_code) {
-			return parsedBody;
-		}
-		if(userTimeout < 0 ){
+	.then(function() {
+		expireAppCache(appTarget, theApp.appName);
+		
+		if (userTimeout < 0){
 			userTimeout = theApp.manifest.applications[0].timeout ? theApp.manifest.applications[0].timeout : DEFAULT_TIMEOUT;
 		}
-		var attemptsLeft = Math.min(userTimeout, MAX_TIMEOUT);
+		var attemptsLeft = Math.min(userTimeout, MAX_TIMEOUT) / 2;
 		
-		function promiseWhile(value) {
-			return Promise.resolve(value).then(function() {
-				return collectCFRespond()
+		function promiseWhile() {
+			return getInstances()
 			.then(function(result){
+				var errorStatus;
 				if(!result.data[0] && result.attemptsLeft > 0){
-					return promiseWhile(result.attemptsLeft);
+					return promiseWhile();
 				}else if(result.data[0] && result.attemptsLeft > 0){
 					var instancesNo = Object.keys(result.data).length;
 					var runningInstanceNo = 0;
@@ -373,6 +395,10 @@ function startApp(userId, userTimeout ,appTarget){
 								runningInstanceNo++;
 							}else if(result.data[key].state === "FLAPPING"){
 								flappingInstanceNo++;
+							}else if(result.data[key].state === "CRASHED"){
+								errorStatus = new Error("Application crashed, please check Logs for more detail");
+								errorStatus.code = "400";
+								return Promise.reject(errorStatus);
 							}
 						}
 					}
@@ -380,55 +406,55 @@ function startApp(userId, userTimeout ,appTarget){
 						return "RUNNING";
 					}
 					if (flappingInstanceNo > 0 ) {
-						var errorStatus = new Error("An error occurred during application startup, please refresh page.");
+						errorStatus = new Error("An error occurred during application startup, please refresh page.");
 						errorStatus.code = "400";
 						return Promise.reject(errorStatus);
 					}
-					return promiseWhile(result.attemptsLeft);
+					return promiseWhile();
 				}else if(result.attemptsLeft === 0 ){
-					var errorStatus = new Error("Application startup process timeout, please refresh page.");
+					errorStatus = new Error("Application startup process timeout, please refresh page.");
 					errorStatus.code = "400";
 					return Promise.reject(errorStatus);
 				}
-				});
 			});
 		}
-		function collectCFRespond(){
-			return new Promise(function(fulfill, reject){
+		function getInstances(){
+			return new Promise(function(fulfill){
 				setTimeout(function(){
 					return target.cfRequest("GET", userId, appTarget.Url + theApp.appUrl + "/instances", null, null, null, null, appTarget)
 					.then(function(result){
 						fulfill({"data": result,"attemptsLeft": --attemptsLeft});
 					})
-					.catch(function(err){
-						return reject(err);
+					.catch(function(){
+						fulfill({"data": [],"attemptsLeft": --attemptsLeft});
 					});
 				}, 2000);
 			});
 		}
-		return promiseWhile(attemptsLeft);
+		return promiseWhile();
 	});
 }
 
 function stopApp(userId, appTarget){
-	var cacheKey = appTarget.Url + appTarget.Org + appTarget.Space + theApp.appName;
-	appCache.del(cacheKey);
+	expireAppCache(appTarget, theApp.appName);
 	
+	logger.debug("Stopping application=" + theApp.appName);
 	var body = {"console":true,"state":"STOPPED"};
 	return target.cfRequest("PUT", userId, appTarget.Url + theApp.appUrl, {"inline-relations-depth":"1"}, JSON.stringify(body), null, null, appTarget)
-	.then(function(result){
+	.then(function(){
 		return "STOPPED";
 	});
 }
 function restartApp(userId, appTarget){
+	logger.debug("Restarting application=" + theApp.appName);
 	return stopApp(userId,appTarget) 
 	.then(function(){
 		return startApp(userId, -1, appTarget);
 	});
 }
 function pushApp(req, appTarget){
-	var cacheKey = appTarget.Url + appTarget.Org + appTarget.Space + theApp.appName;
-	appCache.del(cacheKey);
+	logger.debug("Pushing application=" + theApp.appName);
+	expireAppCache(appTarget, theApp.appName);
 	
 	var waitFor;
 	if(theApp.summaryJson){
@@ -460,29 +486,26 @@ function createApp(req, appTarget){
 	}
 	return Promise.resolve(waitForStackGuid)
 	.then(function(stackGuid){
+		logger.debug("Create application=" + theApp.appName);
 		var body = {
 			"space_guid": appTarget.Space.metadata.guid,
 			"name":theApp.appName,
 			"instances": Number(theApp.manifest.applications[0].instances) || 1,
 			"buildPack":theApp.manifest.applications[0].buildpack || null,
-			"command":theApp.manifest.applications[0].command,	
+			"command":theApp.manifest.applications[0].command,
 			"memory": normalizeMemoryMeasure(theApp.manifest.applications[0].memory),
 			"stack_guid":stackGuid,
 			"environment_json":theApp.manifest.applications[0].env || {}
 		};
 		return target.cfRequest("POST", req.user.username, appTarget.Url + "/v2/apps", null, JSON.stringify(body), null, null, appTarget)
 		.then(function(result){
-			if(result.error_code){
-				return handleSimpleErrorStatus(result, "404");
-			}
 			theApp.appGuid = result.metadata.guid;
 			return result;
 		});
 	});
 }
 function updateApp(req, appTarget){
-	var cacheKey = appTarget.Url + appTarget.Org + appTarget.Space + theApp.appName;
-	appCache.del(cacheKey);
+	expireAppCache(appTarget, theApp.appName);
 	
 	var stack = theApp.manifest.applications[0].stack;
 	var waitForStackGuid;
@@ -491,11 +514,12 @@ function updateApp(req, appTarget){
 	}
 	return Promise.resolve(waitForStackGuid)
 	.then(function(stackGuid){
+		logger.debug("Update application=" + theApp.appName);
 		var body = {
 			"name":theApp.appName,
 			"instances":theApp.manifest.applications[0].instances || 1,
 			"buildPack":theApp.manifest.applications[0].buildpack || null,
-			"command":theApp.manifest.applications[0].command,	
+			"command":theApp.manifest.applications[0].command,
 			"memory": normalizeMemoryMeasure(theApp.manifest.applications[0].memory),
 			"stack_guid":stackGuid,
 			"environment_json":theApp.manifest.applications[0].env || {}
@@ -507,12 +531,14 @@ function updateApp(req, appTarget){
 	});
 }
 function getStackGuidByName(userId, stackname ,appTarget){
+	logger.debug("Getting stack guid=" + theApp.appName);
 	return target.cfRequest("GET", userId, appTarget.Url + "/v2/stacks", {"q":"name:"+ stackname,"inline-relations-depth":"1"})
 	.then(function(result){
 		return result.resources[0] && result.resources[0].metadata.guid || null;
 	});
 }
 function bindRoute(req, appTarget){
+	logger.debug("Binding Route=" + theApp.appName);
 	return domains.getCFdomains(appTarget, req.user.username, targetRequest.Url)
 	/* get available domains */
 	.then(function(domainArray){
@@ -553,9 +579,6 @@ function bindRoute(req, appTarget){
 			}
 			/* attach route to application */
 			return waitForRoute.then(function(appRoute){
-				if(appRoute.error_code){
-					return handleSimpleErrorStatus(appRoute, "400");
-				}
 				theApp.appRoute = appRoute;
 				return target.cfRequest("PUT", req.user.username, appTarget.Url + "/v2/apps/" + theApp.appGuid + "/routes/" + appRoute.metadata.guid, null, null, null, null, appTarget);
 			});
@@ -563,21 +586,24 @@ function bindRoute(req, appTarget){
 	});
 }
 function uploadBits(req, appTarget){
+	logger.debug("Upload application content=" + theApp.appName);
 	var cloudAccessToken;
 	var archiveredFilePath;
 	return target.getAccessToken(req.user.username, appTarget)
 	.then(function(token){
 		cloudAccessToken = token;
-		return archiveTarget(theApp.appStore, req)
+		logger.debug("Upload application content(zip start)=" + theApp.appName);
+		var deploymentPackage = plans.getDeploymentPackager(theApp.deploymentPackager);
+		return deploymentPackage(theApp.appStore, theApp.command)
 		.then(function(filePath){
-			theApp.appPackageType = path.extname(filePath).substring(1);
+			logger.debug("Upload application content(zip done)=" + theApp.appName);
 			archiveredFilePath = filePath;
 			if(!archiveredFilePath){
 				var errorStatus = new Error("Failed to read application content");
 				errorStatus.code = "500";
 				return Promise.reject(errorStatus);
 			}
-			
+			theApp.appPackageType = path.extname(filePath).substring(1);
 			var uploadFileStream = fs.createReadStream(archiveredFilePath);
 			var uploadBitsHeader = {
 					method: "PUT",
@@ -604,8 +630,10 @@ function uploadBits(req, appTarget){
 				errorStatus.code = "500";
 				return Promise.reject(errorStatus);
 			});
+			logger.debug("Upload application content(upload start)=" + theApp.appName);
 			return target.cfRequest(null, null, null ,null, null, null,uploadBitsHeader);
 		}).then(function(requestResult){
+			logger.debug("Upload application content(upload done)=" + theApp.appName);
 			var ATTEMPTACCOUNT = 150;
 			var initialValue = {
 				"attemptsLeft":ATTEMPTACCOUNT,
@@ -619,9 +647,11 @@ function uploadBits(req, appTarget){
 			
 			function promiseWhile(value) {
 				return Promise.resolve(value).then(function(collectResult) {
+					logger.debug("Upload application content(checking finish)=" + theApp.appName);
 					return collectCFRespond(collectResult)
 					.then(function(result){
 						if(result.status === "finished"){
+							logger.debug("Upload application content(done)=" + theApp.appName);
 							// When it's 'finished', return from the whole recursive promise chain.
 							return;
 						}
@@ -663,10 +693,13 @@ function uploadBits(req, appTarget){
 					return Promise.resolve("finished");
 				}
 			}
+		}).catch(function(err){
+			return Promise.reject(err);
 		});
-	})
+	});
 }
 function bindServices(req, appTarget){
+	logger.debug("Binding services=" + theApp.appName);
 	if(theApp.manifest.applications[0].services){
 		return target.cfRequest("GET", req.user.username, appTarget.Url + "/v2/services", {"inline-relations-depth":"1"}, null, null, null, appTarget)
 		.then(function(result){
@@ -764,21 +797,15 @@ function getAppbyGuid(userId, appGuid ,appTarget){
 	.then(function(appJSON){
 		return target.cfRequest("GET", userId, theApp.appTarget.Url + appJSON.metadata.url + "/summary", null, null, null, null, appTarget)
 		.then(function(result){
-			if(result.error_code){
-				return handleSimpleErrorStatus(result, "404");
-			}
 			theApp.summaryJson = result;
 			theApp.appGuid = appJSON.metadata.guid;
-			theApp.appName = result.name;			
+			theApp.appName = result.name;
 		});
 	});
 }
 function getRouteGuidbyGuid(userId, routeGuid, appTarget){
 	return target.cfRequest("GET", userId,appTarget.Url + "/v2/routes/" + routeGuid, null, null, null, null, appTarget)
 	.then(function(result){
-		if(result.error_code){
-			return handleSimpleErrorStatus(result, "404");
-		}
 		return result.metadata.guid; // TODO this need to test
 	});
 }
@@ -790,9 +817,6 @@ function getServiceGuid(userId, service, appTarget){
 	return target.cfRequest("GET", userId, appTarget.Url + "/v2/spaces/" + appTarget.Space.metadata.guid + "/service_instances"
 	, {"inline-relations-depth":"1","return_user_provided_service_instances":"true","q":"name:"+service}, null, null, null, appTarget)
 	.then(function(serviceJson){
-		if(serviceJson.error_code){
-			return handleSimpleErrorStatus(serviceJson, "404");
-		}
 		var serviceResources = serviceJson.resources;
 		var serviceInstanceGUID;
 		// Find service Guid from the response of getting service request.
@@ -811,9 +835,6 @@ function createService(userId, serviceName, servicePlanGuid, appTarget){
 	};
 	return target.cfRequest("POST", userId, appTarget.Url + "/v2/service_instances", null, JSON.stringify(body), null, null, appTarget)
 	.then(function(result){
-		if(result.error_code){
-			return handleSimpleErrorStatus(result, "404");
-		}
 		return result.metadata.guid;
 	});
 }
@@ -830,77 +851,5 @@ function normalizeMemoryMeasure(memory){
 	}
 	/* return default memory value, i.e. 1024 MB */
 	return 1024;
-}
-function archiveTarget (filePath, req){
-	var ramdomName = crypto.randomBytes(5).toString("hex") + Date.now();
-	var resultFilePath = path.join(xfer.getUploadDir(), ramdomName + ".war");
-	return searchAndCopyNearestwarFile(resultFilePath, filePath,filePath)
-	.then(function(){
-		// If searchAndCopyNearestwarFile fulfill with 'false', it means no .war has been found. so Zip the folder.
-		return new Promise(function(fulfill, reject){
-			var zip = archiver("zip");
-			resultFilePath = path.join(xfer.getUploadDir(), ramdomName + ".zip");
-			var output = bluebirdfs.createWriteStream(resultFilePath);
-			zip.pipe(output);
-			return xfer.write(zip, filePath, filePath)
-			.then(function() {
-				var eventData = { type: fileUtil.ChangeType.ZIPADD, req: req, zip: zip };
-				fileUtil.fireFileModificationEvent(eventData);
-			
-				zip.finalize();
-				zip.on("end", function(){
-			        return fulfill();
-			    });
-			    zip.on("error", function(){
-			    	var errorStatus = new Error("Zipping process went wrong");
-					return Promise.reject(errorStatus);
-			    });
-			});
-		});
-	})
-	.catch(function(result){
-		if(result === "warFound") return; // Assert the .war filed has been copied over.
-		return Promise.reject(result);  // keep escalating other rejections.
-	})
-	.then(function(){
-		return resultFilePath;
-	});
-	
-	function searchAndCopyNearestwarFile (targetWarPath, base, filePath) {
-		return bluebirdfs.statAsync(filePath)
-		.then(function(stats) {
-		/*eslint consistent-return:0*/
-		if (stats.isDirectory()) {
-			if (filePath.substring(filePath.length-1) !== "/") filePath = filePath + "/";
-			return bluebirdfs.readdirAsync(filePath)
-			.then(function(directoryFiles) {
-				var SUBDIR_SEARCH_CONCURRENCY = 1;
-				return Promise.map(directoryFiles, function(entry) {
-					return searchAndCopyNearestwarFile(targetWarPath ,base, filePath + entry);
-				},{ concurrency: SUBDIR_SEARCH_CONCURRENCY});
-			});
-		}
-		if(path.extname(filePath) === ".war"){
-			return new Promise(function(fulfill,reject){
-				var readenWarfileStream = bluebirdfs.createReadStream(filePath);
-				readenWarfileStream.on("error", function(err) {
-					reject(err);
-				});
-				fulfill(readenWarfileStream);
-			}).then(function(readenWarfileStream){
-				return readenWarfileStream.pipe(bluebirdfs.createWriteStream(targetWarPath));
-			}).then(function(){
-				// Using this promise to reject the promise chain.
-				return Promise.reject("warFound");
-			});
-		}
-		return false; // false means no '.war' has been find
-		});
-	}
-}
-function handleSimpleErrorStatus(cfRequestResult, code){
-	var errorStatus = new Error(cfRequestResult.description);
-	errorStatus.code = code;
-	return Promise.reject(errorStatus);
 }
 };

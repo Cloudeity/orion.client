@@ -133,9 +133,10 @@ Deferred) {
 		}
 	};
 	
-	var startup = function() {
+	function createJSEditorInstance() {
 		embeddedEditor.create({parent: "embeddedEditor", statusReporter: statusReporter}).then(function(editorViewer) {
 			document.getElementById("progressMessageDiv").textContent = "Plugins loaded!";
+			jsEditor = editorViewer;
 			editorViewer.setContents(contents, "application/javascript");
 			//editorViewer.inputManager.setAutoSaveTimeout(-1);
 			editorViewer.editor.getTextView().addEventListener("Options",function(evt){
@@ -175,14 +176,65 @@ Deferred) {
 					if(evt.problems) {
 						evt.problems.forEach(function(problem) {
 							console.log(problem);
-						})
+						});
 					}
 				});
 			}
 		});
-		embeddedEditor.create({parent: "embeddedEditor1",
+	}
+	
+	document.getElementById("newEditor").addEventListener("click", function(){
+		jsEditor.destroy();
+		createJSEditorInstance();
+	});	
+
+	document.getElementById("setText").addEventListener("click", function(){
+		jsEditor.editor.getTextView().setText(contents);
+	});	
+
+	var startup = function() {
+		createJSEditorInstance();
+/*		
+var defaults = {
+		autoSave: true,
+		autoSaveTimeout: 250,
+		autoLoad: true,
+		saveDiffs: true,
+		contentAssistAutoTrigger: true,
+		showOccurrences: true,
+		autoPairParentheses: true,
+		autoPairBraces: true,
+		autoPairSquareBrackets: true,
+		autoPairAngleBrackets: false,
+		autoPairQuotations: true,
+		autoCompleteComments: true,
+		smartIndentation: true,
+		trimTrailingWhiteSpace: false,
+		tabSize: 4,
+		expandTab: false,
+		scrollAnimation: true,
+		scrollAnimationTimeout: 300,
+		annotationRuler: true,
+		lineNumberRuler: true,
+		foldingRuler: true,
+		overviewRuler: true,
+		zoomRuler: false,
+		showWhitespaces: false,
+		wordWrap: false,
+		showMargin: false,
+		marginOffset: 80,
+		keyBindings: "Default",
+		diffService: false
+	};	
+	*/
+		embeddedEditor.create({parent: "embeddedEditor1", singleMode: true, editorConfig: {lineNumberRuler: false, overviewRuler: false},
 							   contentType: "application/json",
-							   contents: contents1});
+							   contents: contents1}).then(function(editorViewer){
+			var height = editorViewer.editor.getTextView().computeSize().height;
+			var parent = document.getElementById("embeddedEditor1");
+			parent.style.height = height + "px"; //$NON-NLS-0$
+		});
+		
 		embeddedEditor.create({parent: "embeddedEditor2",
 							   contentType: "foo/bar",
 							   contents: contents2}).then(function(editorViewer){
@@ -231,6 +283,7 @@ Deferred) {
 			editorViewer.serviceRegistry.registerService('orion.edit.occurrences',
 				{computeOccurrences: computeOccurrences}, {contentType: ["foo/bar"]});	
 		});
+		
 	};
 	
 	var files2create = [

@@ -123,6 +123,9 @@ function getTags(req, res) {
 		})
 		.catch(function(err) {
 			writeError(404, res, err.message);
+		})
+		.done(function() {
+			clone.freeRepo(theRepo);
 		});
 	}
 
@@ -148,61 +151,69 @@ function getTags(req, res) {
 			return git.Reference.lookup(theRepo, ref);
 		}))
 		.then(function(referenceList) {
-			async.each(referenceList, function(ref,callback) {
-				isAnnotated(theRepo, ref)
-				.then(function(annotated) {
-					if (typeof annotated === 'string') {
-						return writeError(400, res, annotated);
-					}
-					getTagCommit(theRepo, ref)
-					.then(function(commit) {
-						tags.push(tagJSON(ref.name(), ref.shorthand(), commit.sha(), commit.timeMs(), fileDir, annotated));
-						callback();
-					})
-					.catch(function() {
-						// ignore errors looking up commits
-						tags.push(tagJSON(ref.name(), ref.shorthand(), ref.target().toString(), 0, fileDir, annotated));
-						callback();
+			return new Promise(function(fulfill) {
+				async.each(referenceList, function(ref,callback) {
+					isAnnotated(theRepo, ref)
+					.then(function(annotated) {
+						if (typeof annotated === 'string') {
+							return writeError(400, res, annotated);
+						}
+						getTagCommit(theRepo, ref)
+						.then(function(commit) {
+							tags.push(tagJSON(ref.name(), ref.shorthand(), commit.sha(), commit.timeMs(), fileDir, annotated));
+							callback();
+						})
+						.catch(function() {
+							// ignore errors looking up commits
+							tags.push(tagJSON(ref.name(), ref.shorthand(), ref.target().toString(), 0, fileDir, annotated));
+							callback();
+						});
 					});
+				}, function(err) {
+					fulfill();
+					if (err) {
+						return writeError(403, res);
+					}
+					var resp = {
+						"Children": tags,
+						"Type": "Tag",
+					};
+		
+					if (page && page*pageSize < count) {
+						var nextLocation = url.parse(req.originalUrl, true);
+						nextLocation.query.page = page + 1 + "";
+						nextLocation.search = null; //So that query object will be used for format
+						nextLocation = url.format(nextLocation);
+						resp['NextLocation'] = nextLocation;
+					}
+		
+					if (page && page > 1) {
+						var prevLocation = url.parse(req.originalUrl, true);
+						prevLocation.query.page = page - 1 + "";
+						prevLocation.search = null;
+						prevLocation = url.format(prevLocation);
+						resp['PreviousLocation'] = prevLocation;
+					}
+		
+					writeResponse(200, res, null, resp, true);
 				});
-			}, function(err) {
-				if (err) {
-					return writeError(403, res);
-				}
-				var resp = {
-					"Children": tags,
-					"Type": "Tag",
-				};
-	
-				if (page && page*pageSize < count) {
-					var nextLocation = url.parse(req.originalUrl, true);
-					nextLocation.query.page = page + 1 + "";
-					nextLocation.search = null; //So that query object will be used for format
-					nextLocation = url.format(nextLocation);
-					resp['NextLocation'] = nextLocation;
-				}
-	
-				if (page && page > 1) {
-					var prevLocation = url.parse(req.originalUrl, true);
-					prevLocation.query.page = page - 1 + "";
-					prevLocation.search = null;
-					prevLocation = url.format(prevLocation);
-					resp['PreviousLocation'] = prevLocation;
-				}
-	
-				writeResponse(200, res, null, resp, true);
 			});
 		});
 	})
 	.catch(function(err) {
 		writeError(403, res, err.message);
+	})
+	.done(function() {
+		clone.freeRepo(theRepo);
 	});
 }
 
 function deleteTag(req, res) {
+	var theRepo;
 	var tagName = api.decodeURIComponent(req.params.tagName);
 	return clone.getRepo(req)
 	.then(function(repo) {
+		theRepo = repo;
 		return git.Tag.delete(repo, tagName);
 	})
 	.then(function(resp) {
@@ -214,6 +225,9 @@ function deleteTag(req, res) {
 	})
 	.catch(function(err) {
 		writeError(403, res, err.message);
+	})
+	.done(function() {
+		clone.freeRepo(theRepo);
 	});
 }
 };

@@ -13,8 +13,7 @@
 var assert = require('assert'),
 	path = require("path"),
 	testData = require("./support/test_data"),
-	testHelper = require("./support/testHelper"),
-	taskHelper = require('./support/task_helper');
+	testHelper = require("./support/testHelper");
 
 
 var CONTEXT_PATH = testHelper.CONTEXT_PATH,
@@ -22,7 +21,7 @@ var CONTEXT_PATH = testHelper.CONTEXT_PATH,
 	METADATA =  testHelper.METADATA,
 	taskIds = [];
 	
-var request = testData.setupOrionServer([ CONTEXT_PATH + '/taskHelper', taskHelper.router({root: '/taskHelper', metastore: app.locals.metastore})]);
+var request = testData.setupOrionServer();
 
 describe("Tasks API", function() {
 	beforeEach(function(done) {
@@ -84,23 +83,14 @@ describe("Tasks API", function() {
 							var taskLoc2 = res.body.Location;
 									//ask for all of them
 							request()
-								.get(CONTEXT_PATH + '/task/count')
+								.post(path.join(CONTEXT_PATH, '/taskHelper', path.basename(taskLoc1)))
 								.expect(200)
 								.end(function(err, res) {
 									testHelper.throwIfError(err);
-									assert(res && res.body, "We should have gotten a response");
-									assert.equal(res.body.count, 2, "Got the wrong number of tasks back");
-									//mark the tasks done
 									request()
-										.post(path.join(CONTEXT_PATH, '/taskHelper', path.basename(taskLoc1)))
+										.post(path.join(CONTEXT_PATH, '/taskHelper', path.basename(taskLoc2)))
 										.expect(200)
-										.end(function(err, res) {
-											testHelper.throwIfError(err);
-											request()
-												.post(path.join(CONTEXT_PATH, '/taskHelper', path.basename(taskLoc2)))
-												.expect(200)
-												.end(done)
-										});
+										.end(done)
 								});
 						});
 				});

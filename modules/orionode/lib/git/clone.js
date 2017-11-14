@@ -24,6 +24,7 @@ var api = require('../api'), writeError = api.writeError, writeResponse = api.wr
 	rmdir = require('rimraf'),
 	prefs = require('../prefs'),
 	credentialsProvider = require('./credentials'),
+	gitUtil = require('./util'),
 	responseTime = require('response-time');
 
 module.exports = {};
@@ -41,6 +42,7 @@ module.exports.router = function(options) {
 	workspaceRoot = workspaceRoot.substring(contextPath.length);
 	
 	module.exports.getRepo = getRepo;
+	module.exports.freeRepo = freeRepo;
 	module.exports.getClones = getClones;
 	module.exports.getRemoteCallbacks = getRemoteCallbacks;
 	module.exports.handleRemoteError = handleRemoteError;
@@ -100,7 +102,7 @@ function cloneJSON(base, location, giturl, parents, submodules) {
 		result["PullRequestLocation"] = gitRoot + "/pullRequest" + location;
 	}
 	function isGithubURL(checkUrl){
-		if (checkUrl.indexOf("@") < checkUrl.indexOf(":")){
+		if (checkUrl.indexOf("@") !== -1 && checkUrl.indexOf("@") < checkUrl.indexOf(":")){
  			checkUrl = "ssh://" + checkUrl;
  		}
 		var hostname = url.parse(checkUrl)["hostname"];
@@ -120,7 +122,7 @@ function getRepoByPath(filePath, workspaceDir) {
 	while (!fs.existsSync(fPath)) {
 		fPath = path.dirname(fPath);
 		if (!fPath.startsWith(workspaceDir)) {
-        	return Promise.reject(new Error("Forbidden - Access is denied to: " + fPath));
+			return Promise.reject(new Error("Forbidden - Access is denied to: " + fPath));
 		}
 	}
  	var ceiling = path.dirname(workspaceDir);
@@ -129,7 +131,9 @@ function getRepoByPath(filePath, workspaceDir) {
 		fPath = path.dirname(fPath);
 	}
 	return git.Repository.discover(fPath, 0, ceiling).then(function(buf) {
-		return git.Repository.open(buf.toString());
+		return git.Repository.open(buf.toString()).then(function(repo) {
+			return repo;
+		});
 	});
 }	
 	
@@ -139,6 +143,12 @@ function getRepo(req) {
 	var file = fileUtil.getFile(req, restpath);
 	req.file = file;
 	return getRepoByPath(file.path, file.workspaceDir);
+}
+
+function freeRepo(repo) {
+	if (repo) {
+		repo.free();
+	}
 }
 
 function getfileDir(repo, req) {
@@ -232,7 +242,7 @@ function getClones(req, res, callback) {
 	}
 	
 	function pushRepo(repos, repo, base, location, url, parents, cb) {
-		Promise.all([url || getURL(repo), getSubmodules(repo, location, parents.slice(0).concat([gitRoot + "/clone" + location]))]).then(function(results) {
+		return Promise.all([url || getURL(repo), getSubmodules(repo, location, parents.slice(0).concat([gitRoot + "/clone" + location]))]).then(function(results) {
 			var json = cloneJSON(base, location, results[0], parents, results[1]);
 			repos.push(json);
 			cb(json);
@@ -245,8 +255,10 @@ function getClones(req, res, callback) {
 			return repo.getSubmoduleNames()
 			.then(function(names) {
 				async.each(names, function(name, callback) {
+					var theSubmodule;
 					git.Submodule.lookup(repo, name)
 					.then(function(submodule) {
+						theSubmodule = submodule;
 						var status, subrepo;
 						var sublocation = api.join(location, submodule.path());
 						function done(json, unitialized) {
@@ -256,22 +268,27 @@ function getClones(req, res, callback) {
 								HeadSHA: submodule.headId() ? submodule.headId().toString() : "",
 								Path: submodule.path()
 							};
+							freeRepo(theSubmodule);
 							callback();
 						}
-						git.Submodule.status(repo, submodule.name(), -1)
+						return git.Submodule.status(repo, submodule.name(), -1)
 						.then(function(_status) {
 							status = _status;
 							return submodule.open();
 						})
 						.then(function(_subrepo) {
 							subrepo = _subrepo;
-							pushRepo(modules, subrepo, name, sublocation, submodule.url(), parents, done);
+							return pushRepo(modules, subrepo, name, sublocation, submodule.url(), parents, done);
 						}).catch(function() {
 							var json = cloneJSON(name, sublocation, submodule.url(), parents);
 							modules.push(json);
 							done(json, true || subrepo.isEmpty());
+						})
+						.done(function() {
+							freeRepo(subrepo);
 						});
 					}).catch(function() {
+						freeRepo(theSubmodule);
 						callback();
 					});
 				}, function() {
@@ -306,14 +323,25 @@ function getClones(req, res, callback) {
 	}
 
 	function checkDirectory(dir, cb) {
-		//Check if the dir is a directory
+		// Check if the dir is a directory
 		fs.lstat(dir, function(err, stat) {
 			if (err || !stat.isDirectory()) return cb();
+			if(path.basename(dir) === ".gitted") {
+				 // In nodegit/vender there are a bunch of directories named .gitted, 
+				 // nodegit "open" treat them as git repos, while "discover" doesn't like them. 
+				 // so we skip them anyways.(One potential problem is if a git repo's name is .gitted, it won't show in the git tree)
+				return cb();
+			}
+			var theRepo;
 			git.Repository.open(dir)
 			.then(function(repo) {
+				theRepo = repo;
 				var base = path.basename(dir);
 				var location = getfileDir(repo, file);
-				pushRepo(repos, repo, base, location, null, [], function() { cb(); });
+				pushRepo(repos, repo, base, location, null, [], function() {
+					cb();
+					freeRepo(theRepo);
+				});
 	 		})
 			.catch(function() {
 				fs.readdir(dir, function(err, files) {
@@ -345,6 +373,7 @@ function configRepo(repo, username, email) {
 			if (email) {
 				user.email = email;
 			}
+			gitUtil.verifyConfigRemoteUrl(config);
 			args.writeConfigFile(configFile, config, function(err) {
 				if (err) {
 					return reject(err);
@@ -362,7 +391,7 @@ function getCloneName(req) {
 		if (cloneUrl.charAt(cloneUrl.length - 1) === "/") {
 			cloneUrl = cloneUrl.slice(0, -1);
 		}	
-		cloneName = cloneUrl.substring(cloneUrl.lastIndexOf("/") + 1).replace(".git", "");
+		cloneName = cloneUrl.substring(cloneUrl.lastIndexOf("/") + 1).replace(/.git$/, "");
 	}
 	return cloneName;
 }
@@ -452,10 +481,16 @@ function initRepo(file, req, res){
 
 				// Since we're creating an inital commit, it has no parents. Note that unlike
 				// normal we don't get the head either, because there isn't one yet.
-				return fulfill(theRepo.createCommit("HEAD", author, committer, "Initial commit", oid, []));
+				return theRepo.createCommit("HEAD", author, committer, "Initial commit", oid, []);
+			})
+			.then(function() {
+				fulfill();
 			}).catch(function(e){
 				return reject(e);
-			})
+			}).
+			done(function() {
+				freeRepo(theRepo);
+			});
 		});
 	});
 }
@@ -545,6 +580,9 @@ function putClone(req, res) {
 	})
 	.catch(function(err){
 		writeError(403, res, err.message);
+	})
+	.done(function() {
+		freeRepo(theRepo);
 	});
 }
 
@@ -566,38 +604,53 @@ function deleteClone(req, res) {
 	});
 }
 
-function foreachSubmodule(repo, operation, recursive) {
+function foreachSubmodule(repo, operation, recursive, creds, username, task) {
 	return repo.getSubmoduleNames()
 	.then(function(names) {
 		return new Promise(function(fulfill, reject) {
 			async.series(names.map(function(name) {
 				return function(cb) {
+					var theSubmodule;
 					git.Submodule.lookup(repo, name)
 					.then(function(submodule) {
+						theSubmodule = submodule;
 						var op;
 						if (operation === "sync") {
 							op = submodule.sync();
 						} else if (operation === "update") {
 							op = submodule.init(1)
 							.then(function() {
-								return submodule.update(1, new git.SubmoduleUpdateOptions());
+								var credsCopy = Object.assign({}, creds);
+								return submodule.update(1, {
+									fetchOpts: {
+										callbacks: getRemoteCallbacks(credsCopy, username, task)
+									}
+								});
 							});
 						}
 						return op
 						.then(function() {
 							if (recursive) {
+								var theRepo;
 								return submodule.open()
 								.then(function(subrepo) {
-									return foreachSubmodule(subrepo, operation, recursive);
+									theRepo = subrepo;
+									return foreachSubmodule(subrepo, operation, recursive, creds, username, task);
+								})
+								.then(function() {
+									freeRepo(theRepo);
 								});
 							}
 						});
 					})
 					.then(function() {
-						cb();
+						return cb();
 					})
 					.catch(function(err) {
-						cb(err);
+						return cb(err);
+					}).
+					done(function() {
+						freeRepo(theSubmodule);
 					});
 				};
 			}), function(err) {
@@ -611,7 +664,7 @@ function foreachSubmodule(repo, operation, recursive) {
 	});
 }
 
-function getRemoteCallbacks(req, task) {
+function getRemoteCallbacks(creds, username, task) {
 	return {
 		certificateCheck: function() {
 			return 1; // Continues connection even if SSL certificate check fails. 
@@ -628,8 +681,7 @@ function getRemoteCallbacks(req, task) {
 		 * @callback
 		 */
 		credentials: function(gitUrl, urlUsername) {
-			var creds = req.body;
-			if (creds.GitSshPrivateKey) {
+			if (gitUrl.indexOf("@") !== -1 && gitUrl.indexOf("@") < gitUrl.indexOf(":") && creds.GitSshPrivateKey) {
 				var privateKey = creds.GitSshPrivateKey;
 				var passphrase = creds.GitSshPassphrase;
 				return git.Cred.sshKeyMemoryNew(
@@ -640,20 +692,20 @@ function getRemoteCallbacks(req, task) {
 				);
 			}
 
-			var username = creds.GitSshUsername || urlUsername;
+			var gitusername = creds.GitSshUsername || urlUsername;
 			var password = creds.GitSshPassword;
-			if (username && password) {
+			if (gitusername && password) {
 				/* clear username/password to avoid inifinite loop in nodegit */
 				delete creds.GitSshUsername;
 				delete creds.GitSshPassword;
 				return git.Cred.userpassPlaintextNew(
-					username,
+					gitusername,
 					password || ""
 				);
 			}
 
 			return new Promise(function(resolve, reject) {
-				credentialsProvider.getCredentials(gitUrl, req.user.username).then(
+				credentialsProvider.getCredentials(gitUrl, username).then(
 					function(result) {
 						resolve(result);
 					},
@@ -670,7 +722,7 @@ function handleRemoteError(task, err, cloneUrl) {
 	var fullCloneUrl;
 	if (cloneUrl.indexOf("://") !== -1){
 		fullCloneUrl = cloneUrl;
-	} else if (cloneUrl.indexOf("@") < cloneUrl.indexOf(":")){
+	} else if (cloneUrl.indexOf("@") !== -1 && cloneUrl.indexOf("@") < cloneUrl.indexOf(":")){
 		fullCloneUrl = "ssh://" + cloneUrl;
 	}
 	var u = url.parse(fullCloneUrl, true);
@@ -718,11 +770,11 @@ function postClone(req, res) {
 		return writeError(400, res, "Invalid parameters");
 	}
 	
+	var credsCopy = Object.assign({}, req.body);
 	var task = new tasks.Task(res, false, true, 0, true);
-	
 	return git.Clone.clone(cloneUrl, file.path, {
 		fetchOpts: {
-			callbacks: getRemoteCallbacks(req, task)
+			callbacks: getRemoteCallbacks(req.body, req.user.username, task)
 		}
 	})
 	.then(function(_repo) {
@@ -732,7 +784,7 @@ function postClone(req, res) {
 	.then(function() {
 		// default to true if parameter not set
 		if (req.body.cloneSubmodules === undefined || req.body.cloneSubmodules === null || req.body.cloneSubmodules) {
-			return foreachSubmodule(repo, "update", true);
+			return foreachSubmodule(repo, "update", true, credsCopy, req.user.username, task);
 		}
 	})
 	.then(function(){
@@ -756,6 +808,9 @@ function postClone(req, res) {
 	})
 	.catch(function(err) {
 		handleRemoteError(task, err, cloneUrl);
+	})
+	.done(function() {
+		freeRepo(repo);
 	});
 }
 

@@ -89,6 +89,9 @@ function sendStatus(code, res){
  */
 function writeResponse(code, res, headers, body, needEncodeLocation, noCachedStringRes) {
 	try{
+		if (res.headerSent) {
+			logger.error("header Sent:", res.req.method, res.req.originalUrl);
+		}
 		if (typeof code === 'number') {
 			if (httpCodeMapping) {
 				code = mapHttpStatusCode(code);
@@ -128,6 +131,9 @@ function writeResponse(code, res, headers, body, needEncodeLocation, noCachedStr
  */
 function writeError(code, res, msg) {
 	try{
+		if (res.headerSent) {
+			logger.error("header Sent:", res.req.method, res.req.originalUrl);
+		}
 		if (httpCodeMapping) {
 			code = mapHttpStatusCode(code);
 		}
@@ -137,10 +143,10 @@ function writeError(code, res, msg) {
 			var err = JSON.stringify({Severity: "Error", Message: msg});
 			res.setHeader('Content-Type', 'application/json');
 			res.setHeader('Content-Length', err.length);
-			res.writeHead(code, msg);
+			res.writeHead(code);
 			res.end(err);
 		} else {
-			res.writeHead(code, msg);
+			res.writeHead(code);
 			res.end();
 		}
 	}catch(err){

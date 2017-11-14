@@ -1326,7 +1326,6 @@ maybeDescribe("git", function() {
 	
 	/**
 	 * Create folder and sub-folder, Init a repo on existing folder or sub folder;
-	 * TODO add a another test case for child folder
 	 */
 	describe('Use case 4', function(/*done*/) {
 		var ParentFolder = "ParentFolder";
@@ -1433,6 +1432,146 @@ maybeDescribe("git", function() {
 			});
 		});
 	}); // describe("Use case 4")
+	
+	/**
+	 * Using ssh url to clone a repo with submodules, and check if everyone's in good shape; then add another submodule and delete the one submodule.
+	 */
+	describe('Use case 5', function(/*done*/) {
+		this.timeout(15000);
+		var remoteURI = "git@github.com:oriongittester/orion-test-submodule-parent.git"; // small test repo
+		var PARENT_REPO_NAME = "orion-test-submodule-parent"; // parent of "orion-test-submodule-child1,2,3"
+		var CHILD1_REPO_NAME = "orion-test-submodule-child1"; // parent of "orion-test-submodule-child-child"
+		var CHILD2_REPO_NAME = "orion-test-submodule-child2";
+		var CHILD3_REPO_NAME = "orion-test-submodule-child3";
+		var CHILD_CHILD_REPO_NAME = "orion-test-submodule-child-child"; // Submodule of "orion-test-submodule-child1"
+		var ParentRepoPath = path.join(WORKSPACE, PARENT_REPO_NAME);
+		var CHILD1RepoPath = path.join(ParentRepoPath, CHILD1_REPO_NAME);
+		var CHILD2RepoPath = path.join(ParentRepoPath, CHILD2_REPO_NAME);
+		var CHILD3RepoPath = path.join(ParentRepoPath, CHILD3_REPO_NAME);
+		var CHILDCHILDRepoPath = path.join(CHILD1RepoPath, CHILD_CHILD_REPO_NAME);		
+		it('Clone parent repo with submodules', function(finished) {
+			request()
+			.post(GIT_ROOT + "/clone")
+			.send({
+				"GitUrl": remoteURI,	
+				"Location": '/workspace/' + WORKSPACE_ID,
+			})
+			.expect(202)
+			.end(function(err, res) {
+				assert.ifError(err);
+				getGitResponse(res).then(function(result) {
+					assert.equal(result.HttpCode, 401);
+					assert.equal(result.DetailedMessage, "callback returned unsupported credentials type");
+					request()
+					.post(GIT_ROOT + "/clone")
+					.send({
+						"GitUrl": remoteURI,	
+						"Location": '/workspace/' + WORKSPACE_ID,
+						"GitSshUsername": "git",
+						"GitSshPrivateKey": testHelper.oriongittesterRSAKey
+					})
+					.expect(202)
+					.end(function(err, res) {
+						assert.ifError(err);
+						getGitResponse(res).then(function(result) {
+							assert.equal(result.HttpCode, 200);
+							assert.equal(result.Message, "OK");
+							// Check the submofules was all good
+							var stat1 = fs.statSync(CHILD1RepoPath);
+							assert(stat1.isDirectory());
+							var stat2 = fs.statSync(CHILD2RepoPath);
+							assert(stat2.isDirectory());
+							var statChild = fs.statSync(CHILDCHILDRepoPath);
+							assert(statChild.isDirectory());
+							var childchildPath = PARENT_REPO_NAME + "/" + CHILD1_REPO_NAME + "/" + CHILD_CHILD_REPO_NAME;
+							request()
+							.get(GIT_ROOT + "/branch" + FILE_ROOT + childchildPath)
+							.expect(200)
+							.end(function(err, res) {
+								assert.ifError(err);
+								var headBranch = res.body.Children.find(function(child){
+									return child.Name = "HEAD";
+								})
+								assert(headBranch.Detached,"HEAD is detached");
+								assert(headBranch.Current, "HEAD is current");
+								assert(headBranch.CloneLocation, GIT_ROOT + "/clone" + FILE_ROOT + childchildPath);
+								// Add another submodule child3 to parent
+								var childChildRemoteURI = "git@github.com:oriongittester/orion-test-submodule-child3.git";
+								request()
+								.post(GIT_ROOT + "/submodule" + FILE_ROOT + PARENT_REPO_NAME)
+								.send({
+									"GitUrl": childChildRemoteURI,	
+									"Location": '/workspace/' + WORKSPACE_ID,
+								})
+								.expect(202)
+								.end(function(err, res) {
+									assert.ifError(err);
+									getGitResponse(res).then(function(result) {
+										assert.equal(result.HttpCode, 401);
+										assert.equal(result.DetailedMessage, "callback returned unsupported credentials type");
+										request()
+										.post(GIT_ROOT + "/submodule" + FILE_ROOT + PARENT_REPO_NAME)
+										.send({
+											"GitUrl": childChildRemoteURI,	
+											"Location": '/workspace/' + WORKSPACE_ID,
+											"GitSshUsername": "git",
+											"GitSshPrivateKey": testHelper.oriongittesterRSAKey
+										})
+										.expect(202)
+										.end(function(err, res) {
+											assert.ifError(err);
+											getGitResponse(res).then(function(result) {
+												assert.equal(result.HttpCode, 200);
+												assert.equal(result.Message, "OK");
+												// Check the new child3 submodule is good and update and sync parent module
+												var stat = fs.statSync(CHILD3RepoPath);
+												assert(stat.isDirectory());
+												request()
+												.put(GIT_ROOT + "/submodule" + FILE_ROOT + PARENT_REPO_NAME)
+												.send({
+													"Operation": "sync",	
+												})
+												.expect(200)
+												.end(function(err, res) {
+													assert.ifError(err);
+													request()
+													.put(GIT_ROOT + "/submodule" + FILE_ROOT + PARENT_REPO_NAME)
+													.send({
+														"Operation": "update",	
+													})
+													.expect(200)
+													.end(function(err, res) {
+														assert.ifError(err);
+														finished();
+													});
+												});
+											})
+											.catch(function(err) {
+												assert.ifError(err);
+												finished();
+											});
+										});
+									})
+									.catch(function(err) {
+										assert.ifError(err);
+										finished();
+									});
+								});
+							});
+						})
+						.catch(function(err) {
+							assert.ifError(err);
+							finished();
+						});
+					});
+				})
+				.catch(function(err) {
+					assert.ifError(err);
+					finished();
+				});
+			});
+		});
+	}); // describe("Use case 5")
 
 
 	describe("Rebase", function() {
@@ -2376,7 +2515,7 @@ maybeDescribe("git", function() {
 				var testName = "merge-squash-simple-index"
 				var name = "test.txt";
 				var fullPath = path.join(path.join(WORKSPACE, testName), name);
-				var initial;
+				var initial, current;
 
 				var client = new GitClient(testName);
 				client.init();
@@ -2428,10 +2567,10 @@ maybeDescribe("git", function() {
 			});
 
 			it("conflicts", function(finished) {
-				var testName = "merge-squash-conflicts"
+				var testName = "merge-squash-conflicts";
 				var name = "test.txt";
 				var fullPath = path.join(path.join(WORKSPACE, testName), name);
-				var initial;
+				var initial, current;
 
 				var client = new GitClient(testName);
 				client.init();
@@ -2447,7 +2586,7 @@ maybeDescribe("git", function() {
 					client.commit();
 					return client.start();
 				})
-				.then(function(commit) {
+				.then(function() {
 					client.createBranch("other");
 					// reset back to the initial state of ""
 					client.reset("HARD", initial);
@@ -4362,6 +4501,33 @@ maybeDescribe("git", function() {
 			});
 		});
 
+		it("Prevent Traling Slash for remote urls", function(done) {
+			var goodUrl = "https://github.com/octocat/Spoon-Knife.git";
+			var badUrl = "https://github.com/octocat/Spoon-Knife.git/"  // trailling slash is what we testing
+			repoConfig()
+			.end(function(err, res) {
+				assert.ifError(err);
+				request()
+				.put(GIT_ROOT + "/config/remote.origin.url/clone" + FILE_ROOT + TEST_REPO_NAME)
+				.send({ Value: [badUrl] })
+				.expect(200)
+				.end(function(err/*, res*/) {
+					assert.ifError(err);
+					// Ensure the value was actually changed in the repo
+					request()
+					.get(GIT_ROOT + "/config/clone" + FILE_ROOT + TEST_REPO_NAME)
+					.expect(200)
+					.end(function(err, res) {
+						assert.ifError(err);
+						assert.ok(res.body.Children.length > 0);
+						var remote = find(res.body.Children, function(c) { return c.Key === "remote.origin.url"; });
+						assert.equal(remote.Value[0], goodUrl);
+						done();
+					});
+				});
+			});
+		});
+
 		it("bug 516088", function(finished) {
 			var client = new GitClient("bug516088-config-あいうえお");
 			client.init();
@@ -4410,4 +4576,70 @@ maybeDescribe("git", function() {
 			});
 		});
 	}); // describe("fileDiff")
+
+	describe("Bug515131", function() {
+		var cloneUrl1 = "https://github.com/oriongittester/nice.gitrepo.git";
+		var name1 = "nice.gitrepo";
+		var cloneUrl2 = "https://github.com/oriongittester/.gitted.git";
+		var name2 = ".gitted";
+		/**
+		 * Clone a repo name nice.gitrepo
+		 */
+		it("test clone special name case 1", function(finished) {
+			request()
+			.post(GIT_ROOT + "/clone/")
+			.send({
+				GitUrl: cloneUrl1,
+				Location: FILE_ROOT
+			})
+			.expect(202)
+			.end(function(err, res) {
+				assert.ifError(err);
+				getGitResponse(res).then(function(res2) {
+					assert.equal(res2.HttpCode, 200);
+					assert.equal(res2.Message, "OK");
+					assert.equal(res2.JsonData.Location, GIT_ROOT + "/clone"+ FILE_ROOT + name1);
+					finished();
+				})
+				.catch(function(err) {
+					assert.ifError(err);
+					finished();
+				});
+			});
+		}); // end of it("test clone special name case 1")
+
+		// Clone a repo with name ".gitted", first confirm the repo name is good then confirm this repo name will be ignored
+		it("test clone special name case 2", function(finished) {
+			request()
+			.post(GIT_ROOT + "/clone/")
+			.send({
+				GitUrl: cloneUrl2,
+				Location: FILE_ROOT
+			})
+			.expect(202)
+			.end(function(err, res) {
+				assert.ifError(err);
+				getGitResponse(res).then(function(res2) {
+					assert.equal(res2.HttpCode, 200);
+					assert.equal(res2.Message, "OK");
+					assert.equal(res2.JsonData.Location, GIT_ROOT + "/clone"+ FILE_ROOT + name2);
+					request()
+					.get(GIT_ROOT + "/clone/workspace/" + WORKSPACE_ID)
+					.expect(200)
+					.end(function(err, res){
+						if(res.body.Children.length > 0){
+							res.body.Children.forEach(function(repo){
+								assert.notEqual(repo.Name, name2); // ".gitted is a very special repo name, which we ignore any repo with that name."
+							})
+						}
+						finished();
+					})
+				})
+				.catch(function(err) {
+					assert.ifError(err);
+					finished();
+				});
+			});
+		}); // end of it("test clone special name case 2")
+	}) // end of it("Bug515131")
 }); // describe("Git")

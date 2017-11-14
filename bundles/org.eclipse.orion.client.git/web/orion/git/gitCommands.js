@@ -1195,13 +1195,15 @@ var exports = {};
 				if (bidiUtils.isBidiEnabled()) {
 					itemName = bidiUtils.enforceTextDirWithUcc(itemName);
 				}
-				if (confirm(i18nUtil.formatMessage(messages["Are you sure you want to delete tag ${0}?"], itemName))) {
-					var progress = serviceRegistry.getService("orion.page.progress"); //$NON-NLS-0$
-					var msg = i18nUtil.formatMessage(messages["Removing tag {$0}"], itemName);
-					progress.progress(serviceRegistry.getService("orion.git.provider").doRemoveTag(item.Location), msg).then(function() { //$NON-NLS-0$
-						dispatchModelEventOn({type: "modelChanged", action: "removeTag", tag: item}); //$NON-NLS-1$ //$NON-NLS-0$
-					}, displayErrorOnStatus);
-				}
+				commandService.confirm(data.domNode || data.domParent, i18nUtil.formatMessage(messages["Are you sure you want to delete tag ${0}?"], itemName), messages.OK, messages.Cancel, false, function(doit) {
+					if (doit) {
+						var progress = serviceRegistry.getService("orion.page.progress"); //$NON-NLS-0$
+						var msg = i18nUtil.formatMessage(messages["Removing tag {$0}"], itemName);
+						progress.progress(serviceRegistry.getService("orion.git.provider").doRemoveTag(item.Location), msg).then(function() { //$NON-NLS-0$
+							dispatchModelEventOn({type: "modelChanged", action: "removeTag", tag: item}); //$NON-NLS-1$ //$NON-NLS-0$
+						}, displayErrorOnStatus);
+					}
+				});
 			},
 			visibleWhen: function(item) {
 				return item.Type === "Tag"; //$NON-NLS-0$
@@ -2617,7 +2619,8 @@ var exports = {};
 				item.GitUrl = gitUrl;
 				exports.getDefaultSshOptions(serviceRegistry, item).then(function func(options) {
 					var msg = i18nUtil.formatMessage(messages["AddSubmodule"], name, data.items.Name);
-					var deferred = progress.progress(gitService.addSubmodule(name, data.items.SubmoduleLocation, path, gitUrl, explorer.defaultPath), msg);
+					var deferred = progress.progress(gitService.addSubmodule(name, data.items.SubmoduleLocation, path, gitUrl, explorer.defaultPath,options.gitSshUsername, options.gitSshPassword, options.knownHosts, options.gitPrivateKey,
+								options.gitPassphrase), msg);
 					serviceRegistry.getService("orion.page.message").createProgressMonitor(deferred, //$NON-NLS-0$
 						   messages["Adding submodule: "]  + gitUrl);
 					deferred.then(function(jsonData) {

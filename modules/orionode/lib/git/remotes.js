@@ -17,7 +17,7 @@ var api = require('../api'), writeError = api.writeError, writeResponse = api.wr
 	clone = require('./clone'),
 	express = require('express'),
 	bodyParser = require('body-parser'),
-	log4js = require('log4js'),
+	gitUtil = require('./util'),
 	responseTime = require('response-time');
 
 module.exports = {};
@@ -124,6 +124,7 @@ function getRemotes(req, res) {
 					cb();
 				});
 			}, function() {
+				clone.freeRepo(repo);
 				writeResponse(200, res, null, {
 					"Children": r,
 					"Type": "Remote"
@@ -166,6 +167,7 @@ function getRemotes(req, res) {
 						callback(err);
 					});
 				}, function(err) {
+					clone.freeRepo(repo);
 					if (err) {
 						return writeError(403, res);
 					}
@@ -196,6 +198,9 @@ function getRemotes(req, res) {
 		})
 		.catch(function() {
 			return writeError(403, res);
+		})
+		.done(function() {
+			clone.freeRepo(theRepo);
 		});
 	}
 	return writeError(404, res);
@@ -248,6 +253,7 @@ function addRemote(req, res) {
 			if (req.body.PushRefSpec) {
 				remoteConfig.push.push(req.body.PushRefSpec);
 			}
+			gitUtil.verifyConfigRemoteUrl(config);
 			args.writeConfigFile(configFile, config, function(err) {
 				if (err) {
 					// ignore errors
@@ -258,6 +264,9 @@ function addRemote(req, res) {
 	})
 	.catch(function(err) {
 		writeError(403, res, err.message);
+	})
+	.done(function() {
+		clone.freeRepo(repo);
 	});
 }
 
@@ -295,10 +304,10 @@ function fetchRemote(req, res, remote, branch, force) {
 		return remoteObj.fetch(
 			refSpec ? [refSpec] : null,
 			{
-				callbacks: clone.getRemoteCallbacks(req, task),
+				callbacks: clone.getRemoteCallbacks(req.body, req.user.username, task),
 				downloadTags: 3     // 3 = C.GIT_REMOTE_DOWNLOAD_TAGS_ALL (libgit2 const) 
 			},
-			"fetch"	
+			"fetch"
 		);
 	})
 	.then(function(err) {
@@ -320,13 +329,16 @@ function fetchRemote(req, res, remote, branch, force) {
 			err.code = 404;
 		}
 		clone.handleRemoteError(task, err, remoteObj.url());
+	})
+	.done(function() {
+		clone.freeRepo(repo);
 	});
 }
 
 function pushRemote(req, res, remote, branch, pushSrcRef, tags, force) {
 	var repo;
 	var remoteObj;
-	
+	var credsCopy = Object.assign({}, req.body);
 	var task = new tasks.Task(res, false, true, 0 ,true);	
 	return clone.getRepo(req)
 	.then(function(r) {
@@ -345,11 +357,11 @@ function pushRemote(req, res, remote, branch, pushSrcRef, tags, force) {
 		if(tags){
 			return repo.getRemote(remote)
 			.then(function(remote){
-				return Promise.all([remote,remote.connect(git.Enums.DIRECTION.FETCH, clone.getRemoteCallbacks(req, task))]);			
+				return Promise.all([remote,remote.connect(git.Enums.DIRECTION.FETCH, clone.getRemoteCallbacks(req.body, req.user.username, task))]);			
 			})
 			.then(function(results){
 				var remote = results[0];
-       			return Promise.all([remote, remote.referenceList()]);
+				return Promise.all([remote, remote.referenceList()]);
 			}).then(function(results){
 				var headNames = results[1].map(function(remoteHead){
 					return remoteHead.name();
@@ -370,7 +382,7 @@ function pushRemote(req, res, remote, branch, pushSrcRef, tags, force) {
 	})
 	.then(function(refSpecs){
 		return remoteObj.push(
-			refSpecs, {callbacks: clone.getRemoteCallbacks(req, task)}
+			refSpecs, {callbacks: clone.getRemoteCallbacks(credsCopy, req.user.username, task)}
 		);
 	})
 	.then(function(err) {
@@ -397,13 +409,18 @@ function pushRemote(req, res, remote, branch, pushSrcRef, tags, force) {
 	})
 	.catch(function(err) {
 		clone.handleRemoteError(task, err, remoteObj.url());
+	})
+	.done(function() {
+		clone.freeRepo(repo);
 	});
 }
 
 function deleteRemote(req, res) {
+	var theRepo;
 	var remoteName = api.decodeURIComponent(req.params.remoteName);
 	clone.getRepo(req)
 	.then(function(repo) {
+		theRepo = repo;
 		var configFile = api.join(repo.path(), "config");
 		args.readConfigFile(configFile, function(err, config) {
 			if (err) {
@@ -422,6 +439,9 @@ function deleteRemote(req, res) {
 	})
 	.catch(function(err) {
 		return writeError(400, res, err.message);
+	})
+	.done(function() {
+		clone.freeRepo(theRepo);
 	});
 }
 };
